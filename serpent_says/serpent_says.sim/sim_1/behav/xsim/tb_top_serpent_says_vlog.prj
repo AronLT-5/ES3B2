@@ -1,0 +1,12 @@
+# compile verilog/system verilog design source files
+verilog xil_defaultlib  \
+"../../../../rtl/clk_divider.v" \
+"../../../../rtl/top_serpent_says.v" \
+"../../../../rtl/vga_controller.v" \
+"../../../../tb/tb_top_serpent_says.v" \
+
+# compile glbl module
+verilog xil_defaultlib "glbl.v"
+
+# Do not sort compile order
+nosort

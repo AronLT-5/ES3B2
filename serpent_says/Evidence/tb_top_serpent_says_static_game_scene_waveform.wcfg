@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wave_config>
+   <wave_state>
+   </wave_state>
+   <db_ref_list>
+      <db_ref path="tb_top_serpent_says_behav.wdb" id="1">
+         <top_modules>
+            <top_module name="glbl" />
+            <top_module name="tb_top_serpent_says" />
+         </top_modules>
+      </db_ref>
+   </db_ref_list>
+   <zoom_setting>
+      <ZoomStartTime time="0.000000000 ms"></ZoomStartTime>
+      <ZoomEndTime time="10.000100001 ms"></ZoomEndTime>
+      <Cursor1Time time="5.953395000 ms"></Cursor1Time>
+   </zoom_setting>
+   <column_width_setting>
+      <NameColumnWidth column_width="276"></NameColumnWidth>
+      <ValueColumnWidth column_width="120"></ValueColumnWidth>
+   </column_width_setting>
+   <WVObjectSize size="13" />
+   <wvobject fp_name="/tb_top_serpent_says/CLK100MHZ" type="logic">
+      <obj_property name="ElementShortName">CLK100MHZ</obj_property>
+      <obj_property name="ObjectShortName">CLK100MHZ</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/CPU_RESETN" type="logic">
+      <obj_property name="ElementShortName">CPU_RESETN</obj_property>
+      <obj_property name="ObjectShortName">CPU_RESETN</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/VGA_HS" type="logic">
+      <obj_property name="ElementShortName">VGA_HS</obj_property>
+      <obj_property name="ObjectShortName">VGA_HS</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/VGA_VS" type="logic">
+      <obj_property name="ElementShortName">VGA_VS</obj_property>
+      <obj_property name="ObjectShortName">VGA_VS</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/VGA_R" type="array">
+      <obj_property name="ElementShortName">VGA_R[3:0]</obj_property>
+      <obj_property name="ObjectShortName">VGA_R[3:0]</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/VGA_G" type="array">
+      <obj_property name="ElementShortName">VGA_G[3:0]</obj_property>
+      <obj_property name="ObjectShortName">VGA_G[3:0]</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/VGA_B" type="array">
+      <obj_property name="ElementShortName">VGA_B[3:0]</obj_property>
+      <obj_property name="ObjectShortName">VGA_B[3:0]</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/dut/pixel_x" type="array">
+      <obj_property name="ElementShortName">pixel_x[9:0]</obj_property>
+      <obj_property name="ObjectShortName">pixel_x[9:0]</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/dut/pixel_y" type="array">
+      <obj_property name="ElementShortName">pixel_y[9:0]</obj_property>
+      <obj_property name="ObjectShortName">pixel_y[9:0]</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/dut/snake_head_region" type="logic">
+      <obj_property name="ElementShortName">snake_head_region</obj_property>
+      <obj_property name="ObjectShortName">snake_head_region</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/dut/snake_body_region" type="logic">
+      <obj_property name="ElementShortName">snake_body_region</obj_property>
+      <obj_property name="ObjectShortName">snake_body_region</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/dut/food_region" type="logic">
+      <obj_property name="ElementShortName">food_region</obj_property>
+      <obj_property name="ObjectShortName">food_region</obj_property>
+   </wvobject>
+   <wvobject fp_name="/tb_top_serpent_says/dut/obstacle_region" type="logic">
+      <obj_property name="ElementShortName">obstacle_region</obj_property>
+      <obj_property name="ObjectShortName">obstacle_region</obj_property>
+   </wvobject>
+</wave_config>
