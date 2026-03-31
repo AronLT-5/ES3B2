@@ -1,0 +1,35 @@
+# Evidence artifacts
+serpent_says/Evidence/
+serpent_says/evidence/
+
+# Vivado/Xilinx generated directories
+**/.Xil/
+serpent_says/serpent_says.cache/
+serpent_says/serpent_says.runs/
+serpent_says/serpent_says.sim/
+serpent_says/serpent_says.hw/
+serpent_says/serpent_says.ip_user_files/
+serpent_says/serpent_says.srcs/utils_1/imports/
+
+# Vivado/XSim generated logs and intermediates
+*.jou
+*.log
+*.pb
+*.wdb
+*.wdf
+*.str
+*.backup.jou
+
+# Simulation output trees
+**/xsim.dir/
+**/xvlog.pb
+**/xelab.pb
+**/xsim.ini
+**/webtalk_pa.xml
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+*~

@@ -1,8 +1,0 @@
-INFO: [VRFC 10-2263] Analyzing Verilog file "C:/Users/aront/ES3B2/serpent_says/rtl/clk_divider.v" into library xil_defaultlib
-INFO: [VRFC 10-311] analyzing module clk_divider
-INFO: [VRFC 10-2263] Analyzing Verilog file "C:/Users/aront/ES3B2/serpent_says/rtl/top_serpent_says.v" into library xil_defaultlib
-INFO: [VRFC 10-311] analyzing module top_serpent_says
-INFO: [VRFC 10-2263] Analyzing Verilog file "C:/Users/aront/ES3B2/serpent_says/rtl/vga_controller.v" into library xil_defaultlib
-INFO: [VRFC 10-311] analyzing module vga_controller
-INFO: [VRFC 10-2263] Analyzing Verilog file "C:/Users/aront/ES3B2/serpent_says/tb/tb_top_serpent_says.v" into library xil_defaultlib
-INFO: [VRFC 10-311] analyzing module tb_top_serpent_says
