@@ -1,8 +1,12 @@
 `timescale 1ns / 1ps
 
-module top_serpent_says(
+module top_serpent_says #(
+    parameter GAME_TICK_COUNT_MAX = 12_500_000  // 0.5s at 25 MHz
+)(
     input  wire CLK100MHZ,
     input  wire CPU_RESETN,
+    input  wire BTNL,
+    input  wire BTNR,
 
     output wire VGA_HS,
     output wire VGA_VS,
@@ -32,16 +36,10 @@ localparam integer PLAYFIELD_Y_END      = 473;
 
 localparam integer TILE_SIZE            = 16;
 
-// Static game scene tile positions
-localparam integer SNAKE_HEAD_X         = 5;
-localparam integer SNAKE_HEAD_Y         = 5;
-
-localparam integer SNAKE_BODY0_X        = 4;
-localparam integer SNAKE_BODY0_Y        = 5;
-localparam integer SNAKE_BODY1_X        = 3;
-localparam integer SNAKE_BODY1_Y        = 5;
-localparam integer SNAKE_BODY2_X        = 2;
-localparam integer SNAKE_BODY2_Y        = 5;
+localparam integer ARENA_X_MAX =
+    (PLAYFIELD_X_END - PLAYFIELD_X_START + 1) / TILE_SIZE - 1;  // 39
+localparam integer ARENA_Y_MAX =
+    (PLAYFIELD_Y_END - PLAYFIELD_Y_START + 1) / TILE_SIZE - 1;  // 22
 
 localparam integer FOOD_X               = 12;
 localparam integer FOOD_Y               = 10;
@@ -68,6 +66,13 @@ wire snake_body_region;
 wire food_region;
 wire obstacle_region;
 
+// Game state registers
+reg [5:0] head_x,  head_y;
+reg [5:0] body0_x, body0_y;
+reg [5:0] body1_x, body1_y;
+reg [5:0] body2_x, body2_y;
+reg [1:0] direction;  // 00=up, 01=right, 10=down, 11=left
+
 clk_divider u_clk_divider (
     .clk_in   (CLK100MHZ),
     .reset_n  (CPU_RESETN),
@@ -84,6 +89,98 @@ vga_controller u_vga_controller (
     .video_active (video_active)
 );
 
+// --- Game tick counter ---
+reg [31:0] tick_counter;
+wire game_tick = (tick_counter == GAME_TICK_COUNT_MAX - 1);
+
+always @(posedge clk_25mhz or negedge CPU_RESETN) begin
+    if (!CPU_RESETN)
+        tick_counter <= 32'd0;
+    else if (game_tick)
+        tick_counter <= 32'd0;
+    else
+        tick_counter <= tick_counter + 32'd1;
+end
+
+// --- Rising-edge detection for buttons ---
+reg btnl_prev, btnr_prev;
+
+always @(posedge clk_25mhz or negedge CPU_RESETN) begin
+    if (!CPU_RESETN) begin
+        btnl_prev <= 1'b0;
+        btnr_prev <= 1'b0;
+    end else begin
+        btnl_prev <= BTNL;
+        btnr_prev <= BTNR;
+    end
+end
+
+wire btnl_rise = BTNL & ~btnl_prev;
+wire btnr_rise = BTNR & ~btnr_prev;
+
+// --- Turn request latches ---
+reg turn_left_pending;
+reg turn_right_pending;
+
+always @(posedge clk_25mhz or negedge CPU_RESETN) begin
+    if (!CPU_RESETN) begin
+        turn_left_pending  <= 1'b0;
+        turn_right_pending <= 1'b0;
+    end else if (game_tick) begin
+        turn_left_pending  <= 1'b0;
+        turn_right_pending <= 1'b0;
+    end else begin
+        if (btnl_rise) turn_left_pending  <= 1'b1;
+        if (btnr_rise) turn_right_pending <= 1'b1;
+    end
+end
+
+// --- Next direction (relative turning, BTNL priority) ---
+wire [1:0] next_direction = turn_left_pending  ? (direction - 2'd1) :
+                            turn_right_pending ? (direction + 2'd1) :
+                            direction;
+
+// --- Next head position with edge clamping ---
+reg [5:0] next_head_x, next_head_y;
+
+always @(*) begin
+    next_head_x = head_x;
+    next_head_y = head_y;
+    case (next_direction)
+        2'b00: next_head_y = (head_y > 6'd0)        ? (head_y - 6'd1) : head_y;
+        2'b01: next_head_x = (head_x < ARENA_X_MAX) ? (head_x + 6'd1) : head_x;
+        2'b10: next_head_y = (head_y < ARENA_Y_MAX) ? (head_y + 6'd1) : head_y;
+        2'b11: next_head_x = (head_x > 6'd0)        ? (head_x - 6'd1) : head_x;
+    endcase
+end
+
+// --- Head movement flag ---
+wire head_will_move = (next_head_x != head_x) || (next_head_y != head_y);
+
+// --- Game state update ---
+always @(posedge clk_25mhz or negedge CPU_RESETN) begin
+    if (!CPU_RESETN) begin
+        head_x    <= 6'd5;   head_y    <= 6'd5;
+        body0_x   <= 6'd4;   body0_y   <= 6'd5;
+        body1_x   <= 6'd3;   body1_y   <= 6'd5;
+        body2_x   <= 6'd2;   body2_y   <= 6'd5;
+        direction <= 2'b01;  // right
+    end else if (game_tick) begin
+        direction <= next_direction;
+        if (head_will_move) begin
+            head_x  <= next_head_x;
+            head_y  <= next_head_y;
+            body0_x <= head_x;
+            body0_y <= head_y;
+            body1_x <= body0_x;
+            body1_y <= body0_y;
+            body2_x <= body1_x;
+            body2_y <= body1_y;
+        end
+    end
+end
+
+// --- Region flags ---
 assign info_bar_region =
     video_active && (pixel_y < INFO_BAR_HEIGHT);
 
@@ -111,39 +208,37 @@ assign outer_visible_border_region =
         (pixel_y == 10'd0)   || (pixel_y == 10'd479)
     );
 
-// Static snake head
 assign snake_head_region =
     playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + SNAKE_HEAD_X * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (SNAKE_HEAD_X + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + SNAKE_HEAD_Y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (SNAKE_HEAD_Y + 1) * TILE_SIZE));
+    (pixel_x >= (PLAYFIELD_X_START + head_x * TILE_SIZE)) &&
+    (pixel_x <  (PLAYFIELD_X_START + (head_x + 1) * TILE_SIZE)) &&
+    (pixel_y >= (PLAYFIELD_Y_START + head_y * TILE_SIZE)) &&
+    (pixel_y <  (PLAYFIELD_Y_START + (head_y + 1) * TILE_SIZE));
 
-// Static snake body
 wire snake_body0_region;
 wire snake_body1_region;
 wire snake_body2_region;
 
 assign snake_body0_region =
     playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + SNAKE_BODY0_X * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (SNAKE_BODY0_X + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + SNAKE_BODY0_Y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (SNAKE_BODY0_Y + 1) * TILE_SIZE));
+    (pixel_x >= (PLAYFIELD_X_START + body0_x * TILE_SIZE)) &&
+    (pixel_x <  (PLAYFIELD_X_START + (body0_x + 1) * TILE_SIZE)) &&
+    (pixel_y >= (PLAYFIELD_Y_START + body0_y * TILE_SIZE)) &&
+    (pixel_y <  (PLAYFIELD_Y_START + (body0_y + 1) * TILE_SIZE));
 
 assign snake_body1_region =
     playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + SNAKE_BODY1_X * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (SNAKE_BODY1_X + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + SNAKE_BODY1_Y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (SNAKE_BODY1_Y + 1) * TILE_SIZE));
+    (pixel_x >= (PLAYFIELD_X_START + body1_x * TILE_SIZE)) &&
+    (pixel_x <  (PLAYFIELD_X_START + (body1_x + 1) * TILE_SIZE)) &&
+    (pixel_y >= (PLAYFIELD_Y_START + body1_y * TILE_SIZE)) &&
+    (pixel_y <  (PLAYFIELD_Y_START + (body1_y + 1) * TILE_SIZE));
 
 assign snake_body2_region =
     playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + SNAKE_BODY2_X * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (SNAKE_BODY2_X + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + SNAKE_BODY2_Y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (SNAKE_BODY2_Y + 1) * TILE_SIZE));
+    (pixel_x >= (PLAYFIELD_X_START + body2_x * TILE_SIZE)) &&
+    (pixel_x <  (PLAYFIELD_X_START + (body2_x + 1) * TILE_SIZE)) &&
+    (pixel_y >= (PLAYFIELD_Y_START + body2_y * TILE_SIZE)) &&
+    (pixel_y <  (PLAYFIELD_Y_START + (body2_y + 1) * TILE_SIZE));
 
 assign snake_body_region =
     snake_body0_region || snake_body1_region || snake_body2_region;

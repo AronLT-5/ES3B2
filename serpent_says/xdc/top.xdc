@@ -4,10 +4,14 @@ create_clock -period 10.000 [get_ports { CLK100MHZ }]
 create_generated_clock -name CLK25MHZ \
     -source [get_ports {CLK100MHZ}] \
     -divide_by 4 \
-    [get_pins {clk_pix_BUFG_inst/O}]
+    [get_pins {u_clk_divider/div_cnt_reg[1]/Q}]
 
 ## Reset button
 set_property -dict { PACKAGE_PIN C12 IOSTANDARD LVCMOS33 } [get_ports { CPU_RESETN }]
+
+## Buttons
+set_property -dict { PACKAGE_PIN P17 IOSTANDARD LVCMOS33 } [get_ports { BTNL }]
+set_property -dict { PACKAGE_PIN M17 IOSTANDARD LVCMOS33 } [get_ports { BTNR }]
 
 ## VGA Connector
 set_property -dict { PACKAGE_PIN A3 IOSTANDARD LVCMOS33 } [get_ports { VGA_R[0] }]
