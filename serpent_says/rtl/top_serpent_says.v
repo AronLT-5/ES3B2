@@ -41,9 +41,6 @@ localparam integer ARENA_X_MAX =
 localparam integer ARENA_Y_MAX =
     (PLAYFIELD_Y_END - PLAYFIELD_Y_START + 1) / TILE_SIZE - 1;  // 22
 
-localparam integer FOOD_X               = 12;
-localparam integer FOOD_Y               = 10;
-
 localparam integer OBS0_X               = 20;
 localparam integer OBS0_Y               = 8;
 localparam integer OBS1_X               = 20;
@@ -72,6 +69,9 @@ reg [5:0] body0_x, body0_y;
 reg [5:0] body1_x, body1_y;
 reg [5:0] body2_x, body2_y;
 reg [1:0] direction;  // 00=up, 01=right, 10=down, 11=left
+reg       game_over;
+reg [5:0] food_x, food_y;
+reg [1:0] food_idx;
 
 clk_divider u_clk_divider (
     .clk_in   (CLK100MHZ),
@@ -140,22 +140,36 @@ wire [1:0] next_direction = turn_left_pending  ? (direction - 2'd1) :
                             turn_right_pending ? (direction + 2'd1) :
                             direction;
 
-// --- Next head position with edge clamping ---
+// --- Next head position (unclamped) ---
 reg [5:0] next_head_x, next_head_y;
 
 always @(*) begin
     next_head_x = head_x;
     next_head_y = head_y;
     case (next_direction)
-        2'b00: next_head_y = (head_y > 6'd0)        ? (head_y - 6'd1) : head_y;
-        2'b01: next_head_x = (head_x < ARENA_X_MAX) ? (head_x + 6'd1) : head_x;
-        2'b10: next_head_y = (head_y < ARENA_Y_MAX) ? (head_y + 6'd1) : head_y;
-        2'b11: next_head_x = (head_x > 6'd0)        ? (head_x - 6'd1) : head_x;
+        2'b00: next_head_y = head_y - 6'd1;
+        2'b01: next_head_x = head_x + 6'd1;
+        2'b10: next_head_y = head_y + 6'd1;
+        2'b11: next_head_x = head_x - 6'd1;
     endcase
 end
 
-// --- Head movement flag ---
-wire head_will_move = (next_head_x != head_x) || (next_head_y != head_y);
+// --- Collision detection ---
+wire would_hit_wall =
+    (next_direction == 2'b00 && head_y == 0) ||
+    (next_direction == 2'b01 && head_x == ARENA_X_MAX) ||
+    (next_direction == 2'b10 && head_y == ARENA_Y_MAX) ||
+    (next_direction == 2'b11 && head_x == 0);
+
+wire would_hit_obstacle =
+    (next_head_x == OBS0_X && next_head_y == OBS0_Y) ||
+    (next_head_x == OBS1_X && next_head_y == OBS1_Y) ||
+    (next_head_x == OBS2_X && next_head_y == OBS2_Y) ||
+    (next_head_x == OBS3_X && next_head_y == OBS3_Y) ||
+    (next_head_x == OBS4_X && next_head_y == OBS4_Y);
+
+// --- Food collection detection ---
+wire ate_food = (next_head_x == food_x) && (next_head_y == food_y);
 
 // --- Game state update ---
 always @(posedge clk_25mhz or negedge CPU_RESETN) begin
@@ -165,9 +179,14 @@ always @(posedge clk_25mhz or negedge CPU_RESETN) begin
         body1_x   <= 6'd3;   body1_y   <= 6'd5;
         body2_x   <= 6'd2;   body2_y   <= 6'd5;
         direction <= 2'b01;  // right
-    end else if (game_tick) begin
-        direction <= next_direction;
-        if (head_will_move) begin
+        game_over <= 1'b0;
+        food_x    <= 6'd12;  food_y    <= 6'd10;
+        food_idx  <= 2'd0;
+    end else if (game_tick && !game_over) begin
+        if (would_hit_wall || would_hit_obstacle) begin
+            game_over <= 1'b1;
+        end else begin
+            direction <= next_direction;
             head_x  <= next_head_x;
             head_y  <= next_head_y;
             body0_x <= head_x;
@@ -176,6 +195,14 @@ always @(posedge clk_25mhz or negedge CPU_RESETN) begin
             body1_y <= body0_y;
             body2_x <= body1_x;
             body2_y <= body1_y;
+            if (ate_food) begin
+                case (food_idx)
+                    2'd0: begin food_x <= 6'd25; food_y <= 6'd5;  food_idx <= 2'd1; end
+                    2'd1: begin food_x <= 6'd8;  food_y <= 6'd15; food_idx <= 2'd2; end
+                    2'd2: begin food_x <= 6'd30; food_y <= 6'd3;  food_idx <= 2'd3; end
+                    2'd3: begin food_x <= 6'd12; food_y <= 6'd10; food_idx <= 2'd0; end
+                endcase
+            end
         end
     end
 end
@@ -243,13 +270,12 @@ assign snake_body2_region =
 assign snake_body_region =
     snake_body0_region || snake_body1_region || snake_body2_region;
 
-// Static food
 assign food_region =
     playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + FOOD_X * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (FOOD_X + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + FOOD_Y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (FOOD_Y + 1) * TILE_SIZE));
+    (pixel_x >= (PLAYFIELD_X_START + food_x * TILE_SIZE)) &&
+    (pixel_x <  (PLAYFIELD_X_START + (food_x + 1) * TILE_SIZE)) &&
+    (pixel_y >= (PLAYFIELD_Y_START + food_y * TILE_SIZE)) &&
+    (pixel_y <  (PLAYFIELD_Y_START + (food_y + 1) * TILE_SIZE));
 
 // Static obstacles
 wire obstacle0_region;
@@ -325,7 +351,7 @@ assign red_int =
 assign green_int =
     !video_active               ? 4'h0 :
     outer_visible_border_region ? 4'hF :
-    info_bar_region             ? 4'hF :
+    info_bar_region             ? (game_over ? 4'h0 : 4'hF) :
     playfield_border_region     ? 4'hF :
     snake_head_region           ? 4'h0 :
     snake_body_region           ? 4'hF :
