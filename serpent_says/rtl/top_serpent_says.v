@@ -41,6 +41,9 @@ localparam integer ARENA_X_MAX =
 localparam integer ARENA_Y_MAX =
     (PLAYFIELD_Y_END - PLAYFIELD_Y_START + 1) / TILE_SIZE - 1;  // 22
 
+localparam integer INITIAL_SNAKE_LEN    = 4;   // head + 3 body
+localparam integer MAX_SNAKE_LEN        = 8;   // head + 7 body
+
 localparam integer OBS0_X               = 20;
 localparam integer OBS0_Y               = 8;
 localparam integer OBS1_X               = 20;
@@ -51,6 +54,11 @@ localparam integer OBS3_X               = 21;
 localparam integer OBS3_Y               = 10;
 localparam integer OBS4_X               = 22;
 localparam integer OBS4_Y               = 10;
+
+localparam [5:0] FOOD_CAND0_X = 6'd12, FOOD_CAND0_Y = 6'd10;
+localparam [5:0] FOOD_CAND1_X = 6'd25, FOOD_CAND1_Y = 6'd5;
+localparam [5:0] FOOD_CAND2_X = 6'd8,  FOOD_CAND2_Y = 6'd15;
+localparam [5:0] FOOD_CAND3_X = 6'd30, FOOD_CAND3_Y = 6'd3;
 
 wire info_bar_region;
 wire playfield_region;
@@ -68,10 +76,97 @@ reg [5:0] head_x,  head_y;
 reg [5:0] body0_x, body0_y;
 reg [5:0] body1_x, body1_y;
 reg [5:0] body2_x, body2_y;
+reg [5:0] body3_x, body3_y;
+reg [5:0] body4_x, body4_y;
+reg [5:0] body5_x, body5_y;
+reg [5:0] body6_x, body6_y;
 reg [1:0] direction;  // 00=up, 01=right, 10=down, 11=left
 reg       game_over;
 reg [5:0] food_x, food_y;
 reg [1:0] food_idx;
+reg [3:0] snake_len;
+
+// --- Occupancy check functions ---
+
+function obstacle_occupies_tile;
+    input [5:0] tx;
+    input [5:0] ty;
+    obstacle_occupies_tile =
+        (tx == OBS0_X && ty == OBS0_Y) ||
+        (tx == OBS1_X && ty == OBS1_Y) ||
+        (tx == OBS2_X && ty == OBS2_Y) ||
+        (tx == OBS3_X && ty == OBS3_Y) ||
+        (tx == OBS4_X && ty == OBS4_Y);
+endfunction
+
+function visible_body_occupies_tile;
+    input [5:0] tx;
+    input [5:0] ty;
+    visible_body_occupies_tile =
+        (tx == body0_x && ty == body0_y) ||
+        (tx == body1_x && ty == body1_y) ||
+        (tx == body2_x && ty == body2_y) ||
+        (snake_len > INITIAL_SNAKE_LEN     && tx == body3_x && ty == body3_y) ||
+        (snake_len > INITIAL_SNAKE_LEN + 1 && tx == body4_x && ty == body4_y) ||
+        (snake_len > INITIAL_SNAKE_LEN + 2 && tx == body5_x && ty == body5_y) ||
+        (snake_len > INITIAL_SNAKE_LEN + 3 && tx == body6_x && ty == body6_y);
+endfunction
+
+function snake_occupies_tile;
+    input [5:0] tx;
+    input [5:0] ty;
+    snake_occupies_tile =
+        (tx == head_x && ty == head_y) ||
+        visible_body_occupies_tile(tx, ty);
+endfunction
+
+// Post-move body occupancy (assumes growth, used only for food selection on eat ticks).
+// body0_next = head, body1_next = body0, ..., body_N_next = body_(N-1).
+// Visibility uses post-growth snake_len + 1.
+function next_visible_body_occupies_tile;
+    input [5:0] tx;
+    input [5:0] ty;
+    next_visible_body_occupies_tile =
+        (tx == head_x  && ty == head_y)  ||  // body0 after shift
+        (tx == body0_x && ty == body0_y) ||  // body1 after shift
+        (tx == body1_x && ty == body1_y) ||  // body2 after shift
+        (tx == body2_x && ty == body2_y) ||  // body3 after shift (always visible post-growth)
+        (snake_len > INITIAL_SNAKE_LEN     && tx == body3_x && ty == body3_y) ||  // body4
+        (snake_len > INITIAL_SNAKE_LEN + 1 && tx == body4_x && ty == body4_y) ||  // body5
+        (snake_len > INITIAL_SNAKE_LEN + 2 && tx == body5_x && ty == body5_y);    // body6
+endfunction
+
+function next_snake_occupies_tile;
+    input [5:0] tx;
+    input [5:0] ty;
+    next_snake_occupies_tile =
+        (tx == next_head_x && ty == next_head_y) ||  // head after move
+        next_visible_body_occupies_tile(tx, ty);
+endfunction
+
+// --- Food candidate lookup functions ---
+
+function [5:0] food_cand_x;
+    input [1:0] idx;
+    case (idx)
+        2'd0:    food_cand_x = FOOD_CAND0_X;
+        2'd1:    food_cand_x = FOOD_CAND1_X;
+        2'd2:    food_cand_x = FOOD_CAND2_X;
+        2'd3:    food_cand_x = FOOD_CAND3_X;
+        default: food_cand_x = FOOD_CAND0_X;
+    endcase
+endfunction
+
+function [5:0] food_cand_y;
+    input [1:0] idx;
+    case (idx)
+        2'd0:    food_cand_y = FOOD_CAND0_Y;
+        2'd1:    food_cand_y = FOOD_CAND1_Y;
+        2'd2:    food_cand_y = FOOD_CAND2_Y;
+        2'd3:    food_cand_y = FOOD_CAND3_Y;
+        default: food_cand_y = FOOD_CAND0_Y;
+    endcase
+endfunction
 
 clk_divider u_clk_divider (
     .clk_in   (CLK100MHZ),
@@ -161,15 +256,36 @@ wire would_hit_wall =
     (next_direction == 2'b10 && head_y == ARENA_Y_MAX) ||
     (next_direction == 2'b11 && head_x == 0);
 
-wire would_hit_obstacle =
-    (next_head_x == OBS0_X && next_head_y == OBS0_Y) ||
-    (next_head_x == OBS1_X && next_head_y == OBS1_Y) ||
-    (next_head_x == OBS2_X && next_head_y == OBS2_Y) ||
-    (next_head_x == OBS3_X && next_head_y == OBS3_Y) ||
-    (next_head_x == OBS4_X && next_head_y == OBS4_Y);
+wire would_hit_obstacle = obstacle_occupies_tile(next_head_x, next_head_y);
+
+// Preparatory only — not wired into game_over.
+// Uses pre-move body positions. When active self-collision is added,
+// this will need tail-vacate refinement: on non-eating ticks the
+// last visible body segment vacates, so it should be excluded.
+wire would_hit_body = visible_body_occupies_tile(next_head_x, next_head_y);
 
 // --- Food collection detection ---
 wire ate_food = (next_head_x == food_x) && (next_head_y == food_y);
+
+// --- Safe food selection (post-move occupancy check) ---
+wire [1:0] cand_try1 = food_idx + 2'd1;
+wire [1:0] cand_try2 = food_idx + 2'd2;
+wire [1:0] cand_try3 = food_idx + 2'd3;
+
+wire cand1_safe = !obstacle_occupies_tile(food_cand_x(cand_try1), food_cand_y(cand_try1)) &&
+                  !next_snake_occupies_tile(food_cand_x(cand_try1), food_cand_y(cand_try1));
+wire cand2_safe = !obstacle_occupies_tile(food_cand_x(cand_try2), food_cand_y(cand_try2)) &&
+                  !next_snake_occupies_tile(food_cand_x(cand_try2), food_cand_y(cand_try2));
+wire cand3_safe = !obstacle_occupies_tile(food_cand_x(cand_try3), food_cand_y(cand_try3)) &&
+                  !next_snake_occupies_tile(food_cand_x(cand_try3), food_cand_y(cand_try3));
+
+wire [1:0] next_food_idx = cand1_safe ? cand_try1 :
+                           cand2_safe ? cand_try2 :
+                           cand3_safe ? cand_try3 :
+                                        cand_try1;  // fallback
+
+wire [5:0] next_food_x = food_cand_x(next_food_idx);
+wire [5:0] next_food_y = food_cand_y(next_food_idx);
 
 // --- Game state update ---
 always @(posedge clk_25mhz or negedge CPU_RESETN) begin
@@ -178,10 +294,15 @@ always @(posedge clk_25mhz or negedge CPU_RESETN) begin
         body0_x   <= 6'd4;   body0_y   <= 6'd5;
         body1_x   <= 6'd3;   body1_y   <= 6'd5;
         body2_x   <= 6'd2;   body2_y   <= 6'd5;
+        body3_x   <= 6'd0;   body3_y   <= 6'd0;
+        body4_x   <= 6'd0;   body4_y   <= 6'd0;
+        body5_x   <= 6'd0;   body5_y   <= 6'd0;
+        body6_x   <= 6'd0;   body6_y   <= 6'd0;
         direction <= 2'b01;  // right
         game_over <= 1'b0;
-        food_x    <= 6'd12;  food_y    <= 6'd10;
+        food_x    <= FOOD_CAND0_X;  food_y <= FOOD_CAND0_Y;
         food_idx  <= 2'd0;
+        snake_len <= INITIAL_SNAKE_LEN;
     end else if (game_tick && !game_over) begin
         if (would_hit_wall || would_hit_obstacle) begin
             game_over <= 1'b1;
@@ -195,13 +316,20 @@ always @(posedge clk_25mhz or negedge CPU_RESETN) begin
             body1_y <= body0_y;
             body2_x <= body1_x;
             body2_y <= body1_y;
+            body3_x <= body2_x;
+            body3_y <= body2_y;
+            body4_x <= body3_x;
+            body4_y <= body3_y;
+            body5_x <= body4_x;
+            body5_y <= body4_y;
+            body6_x <= body5_x;
+            body6_y <= body5_y;
             if (ate_food) begin
-                case (food_idx)
-                    2'd0: begin food_x <= 6'd25; food_y <= 6'd5;  food_idx <= 2'd1; end
-                    2'd1: begin food_x <= 6'd8;  food_y <= 6'd15; food_idx <= 2'd2; end
-                    2'd2: begin food_x <= 6'd30; food_y <= 6'd3;  food_idx <= 2'd3; end
-                    2'd3: begin food_x <= 6'd12; food_y <= 6'd10; food_idx <= 2'd0; end
-                endcase
+                food_x   <= next_food_x;
+                food_y   <= next_food_y;
+                food_idx <= next_food_idx;
+                if (snake_len < MAX_SNAKE_LEN)
+                    snake_len <= snake_len + 4'd1;
             end
         end
     end
@@ -245,6 +373,10 @@ assign snake_head_region =
 wire snake_body0_region;
 wire snake_body1_region;
 wire snake_body2_region;
+wire snake_body3_region;
+wire snake_body4_region;
+wire snake_body5_region;
+wire snake_body6_region;
 
 assign snake_body0_region =
     playfield_region &&
@@ -267,8 +399,42 @@ assign snake_body2_region =
     (pixel_y >= (PLAYFIELD_Y_START + body2_y * TILE_SIZE)) &&
     (pixel_y <  (PLAYFIELD_Y_START + (body2_y + 1) * TILE_SIZE));
 
+assign snake_body3_region =
+    (snake_len > INITIAL_SNAKE_LEN) &&
+    playfield_region &&
+    (pixel_x >= (PLAYFIELD_X_START + body3_x * TILE_SIZE)) &&
+    (pixel_x <  (PLAYFIELD_X_START + (body3_x + 1) * TILE_SIZE)) &&
+    (pixel_y >= (PLAYFIELD_Y_START + body3_y * TILE_SIZE)) &&
+    (pixel_y <  (PLAYFIELD_Y_START + (body3_y + 1) * TILE_SIZE));
+
+assign snake_body4_region =
+    (snake_len > INITIAL_SNAKE_LEN + 1) &&
+    playfield_region &&
+    (pixel_x >= (PLAYFIELD_X_START + body4_x * TILE_SIZE)) &&
+    (pixel_x <  (PLAYFIELD_X_START + (body4_x + 1) * TILE_SIZE)) &&
+    (pixel_y >= (PLAYFIELD_Y_START + body4_y * TILE_SIZE)) &&
+    (pixel_y <  (PLAYFIELD_Y_START + (body4_y + 1) * TILE_SIZE));
+
+assign snake_body5_region =
+    (snake_len > INITIAL_SNAKE_LEN + 2) &&
+    playfield_region &&
+    (pixel_x >= (PLAYFIELD_X_START + body5_x * TILE_SIZE)) &&
+    (pixel_x <  (PLAYFIELD_X_START + (body5_x + 1) * TILE_SIZE)) &&
+    (pixel_y >= (PLAYFIELD_Y_START + body5_y * TILE_SIZE)) &&
+    (pixel_y <  (PLAYFIELD_Y_START + (body5_y + 1) * TILE_SIZE));
+
+assign snake_body6_region =
+    (snake_len > INITIAL_SNAKE_LEN + 3) &&
+    playfield_region &&
+    (pixel_x >= (PLAYFIELD_X_START + body6_x * TILE_SIZE)) &&
+    (pixel_x <  (PLAYFIELD_X_START + (body6_x + 1) * TILE_SIZE)) &&
+    (pixel_y >= (PLAYFIELD_Y_START + body6_y * TILE_SIZE)) &&
+    (pixel_y <  (PLAYFIELD_Y_START + (body6_y + 1) * TILE_SIZE));
+
 assign snake_body_region =
-    snake_body0_region || snake_body1_region || snake_body2_region;
+    snake_body0_region || snake_body1_region || snake_body2_region ||
+    snake_body3_region || snake_body4_region || snake_body5_region ||
+    snake_body6_region;
 
 assign food_region =
     playfield_region &&
