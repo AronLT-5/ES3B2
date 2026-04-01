@@ -1,7 +1,8 @@
 `timescale 1ns / 1ps
 
 module top_serpent_says #(
-    parameter GAME_TICK_COUNT_MAX = 12_500_000  // 0.5s at 25 MHz
+    parameter GAME_TICK_COUNT_MAX = 12_500_000,  // 0.5s at 25 MHz
+    parameter INITIAL_LIVES       = 3
 )(
     input  wire CLK100MHZ,
     input  wire CPU_RESETN,
@@ -44,6 +45,16 @@ localparam integer ARENA_Y_MAX =
 localparam integer INITIAL_SNAKE_LEN    = 4;   // head + 3 body
 localparam integer MAX_SNAKE_LEN        = 8;   // head + 7 body
 
+localparam [5:0] INIT_HEAD_X   = 6'd5;
+localparam [5:0] INIT_HEAD_Y   = 6'd5;
+localparam [5:0] INIT_BODY0_X  = 6'd4;
+localparam [5:0] INIT_BODY0_Y  = 6'd5;
+localparam [5:0] INIT_BODY1_X  = 6'd3;
+localparam [5:0] INIT_BODY1_Y  = 6'd5;
+localparam [5:0] INIT_BODY2_X  = 6'd2;
+localparam [5:0] INIT_BODY2_Y  = 6'd5;
+localparam [1:0] INIT_DIRECTION = 2'b01;   // right
+
 localparam integer OBS0_X               = 20;
 localparam integer OBS0_Y               = 8;
 localparam integer OBS1_X               = 20;
@@ -85,6 +96,8 @@ reg       game_over;
 reg [5:0] food_x, food_y;
 reg [1:0] food_idx;
 reg [3:0] snake_len;
+reg [7:0] score;
+reg [1:0] lives;
 
 // --- Occupancy check functions ---
 
@@ -258,14 +271,28 @@ wire would_hit_wall =
 
 wire would_hit_obstacle = obstacle_occupies_tile(next_head_x, next_head_y);
 
-// Preparatory only — not wired into game_over.
-// Uses pre-move body positions. When active self-collision is added,
-// this will need tail-vacate refinement: on non-eating ticks the
-// last visible body segment vacates, so it should be excluded.
-wire would_hit_body = visible_body_occupies_tile(next_head_x, next_head_y);
-
 // --- Food collection detection ---
 wire ate_food = (next_head_x == food_x) && (next_head_y == food_y);
+
+// --- Tail position lookup (for tail-vacate suppression) ---
+reg [5:0] tail_x, tail_y;
+always @(*) begin
+    case (snake_len)
+        4'd4:    begin tail_x = body2_x; tail_y = body2_y; end
+        4'd5:    begin tail_x = body3_x; tail_y = body3_y; end
+        4'd6:    begin tail_x = body4_x; tail_y = body4_y; end
+        4'd7:    begin tail_x = body5_x; tail_y = body5_y; end
+        4'd8:    begin tail_x = body6_x; tail_y = body6_y; end
+        default: begin tail_x = body2_x; tail_y = body2_y; end
+    endcase
+end
+
+wire next_head_is_tail = (next_head_x == tail_x) && (next_head_y == tail_y);
+wire would_hit_body_raw = visible_body_occupies_tile(next_head_x, next_head_y);
+// On non-eating ticks the tail vacates its tile, so moving there is safe
+wire would_hit_body = would_hit_body_raw && (ate_food || !next_head_is_tail);
+
+wire any_collision = would_hit_wall || would_hit_obstacle || would_hit_body;
 
 // --- Safe food selection (post-move occupancy check) ---
 wire [1:0] cand_try1 = food_idx + 2'd1;
@@ -290,22 +317,42 @@ wire [5:0] next_food_y = food_cand_y(next_food_idx);
 // --- Game state update ---
 always @(posedge clk_25mhz or negedge CPU_RESETN) begin
     if (!CPU_RESETN) begin
-        head_x    <= 6'd5;   head_y    <= 6'd5;
-        body0_x   <= 6'd4;   body0_y   <= 6'd5;
-        body1_x   <= 6'd3;   body1_y   <= 6'd5;
-        body2_x   <= 6'd2;   body2_y   <= 6'd5;
-        body3_x   <= 6'd0;   body3_y   <= 6'd0;
-        body4_x   <= 6'd0;   body4_y   <= 6'd0;
-        body5_x   <= 6'd0;   body5_y   <= 6'd0;
-        body6_x   <= 6'd0;   body6_y   <= 6'd0;
-        direction <= 2'b01;  // right
+        head_x    <= INIT_HEAD_X;   head_y    <= INIT_HEAD_Y;
+        body0_x   <= INIT_BODY0_X;  body0_y   <= INIT_BODY0_Y;
+        body1_x   <= INIT_BODY1_X;  body1_y   <= INIT_BODY1_Y;
+        body2_x   <= INIT_BODY2_X;  body2_y   <= INIT_BODY2_Y;
+        body3_x   <= 6'd0;          body3_y   <= 6'd0;
+        body4_x   <= 6'd0;          body4_y   <= 6'd0;
+        body5_x   <= 6'd0;          body5_y   <= 6'd0;
+        body6_x   <= 6'd0;          body6_y   <= 6'd0;
+        direction <= INIT_DIRECTION;
         game_over <= 1'b0;
         food_x    <= FOOD_CAND0_X;  food_y <= FOOD_CAND0_Y;
         food_idx  <= 2'd0;
         snake_len <= INITIAL_SNAKE_LEN;
+        score     <= 8'd0;
+        lives     <= INITIAL_LIVES;
     end else if (game_tick && !game_over) begin
-        if (would_hit_wall || would_hit_obstacle) begin
-            game_over <= 1'b1;
+        if (any_collision) begin
+            if (lives <= 2'd1) begin
+                game_over <= 1'b1;
+                lives     <= 2'd0;
+            end else begin
+                lives     <= lives - 2'd1;
+                head_x    <= INIT_HEAD_X;   head_y    <= INIT_HEAD_Y;
+                body0_x   <= INIT_BODY0_X;  body0_y   <= INIT_BODY0_Y;
+                body1_x   <= INIT_BODY1_X;  body1_y   <= INIT_BODY1_Y;
+                body2_x   <= INIT_BODY2_X;  body2_y   <= INIT_BODY2_Y;
+                body3_x   <= 6'd0;          body3_y   <= 6'd0;
+                body4_x   <= 6'd0;          body4_y   <= 6'd0;
+                body5_x   <= 6'd0;          body5_y   <= 6'd0;
+                body6_x   <= 6'd0;          body6_y   <= 6'd0;
+                direction <= INIT_DIRECTION;
+                food_x    <= FOOD_CAND0_X;  food_y <= FOOD_CAND0_Y;
+                food_idx  <= 2'd0;
+                snake_len <= INITIAL_SNAKE_LEN;
+                // score intentionally NOT assigned — preserved across lives
+            end
         end else begin
             direction <= next_direction;
             head_x  <= next_head_x;
@@ -330,6 +377,8 @@ always @(posedge clk_25mhz or negedge CPU_RESETN) begin
                 food_idx <= next_food_idx;
                 if (snake_len < MAX_SNAKE_LEN)
                     snake_len <= snake_len + 4'd1;
+                if (score < 8'hFF)
+                    score <= score + 8'd1;
             end
         end
     end
