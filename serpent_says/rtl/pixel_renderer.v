@@ -74,8 +74,8 @@ module pixel_renderer #(
 );
 
     // --- Colour theme (editable) ---
-    localparam [11:0] P_BODY_COLOR  = 12'h0D0;  // player body green
-    localparam [11:0] R_BODY_COLOR  = 12'h44F;  // rival body blue
+    localparam [11:0] P_BODY_COLOR  = 12'h46C;  // player body blue (matching head)
+    localparam [11:0] R_BODY_COLOR  = 12'hC33;  // rival body red (matching head)
     localparam [11:0] BORDER_COLOR  = 12'hFFF;  // white
     localparam [11:0] PF_BG_COLOR   = 12'h111;  // dark grey
     localparam [11:0] LOWER_BG      = 12'h002;  // dark blue
