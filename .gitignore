@@ -33,3 +33,7 @@ Thumbs.db
 *.tmp
 *.swp
 *~
+
+# Ignore zip files that may be generated for sharing evidence
+*.zip
+

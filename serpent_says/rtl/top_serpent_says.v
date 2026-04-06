@@ -1,598 +1,382 @@
 `timescale 1ns / 1ps
 
 module top_serpent_says #(
-    parameter GAME_TICK_COUNT_MAX = 12_500_000,  // 0.5s at 25 MHz
-    parameter INITIAL_LIVES       = 3
+    parameter BUTTON_TICK_COUNT_MAX = 12_500_000,
+    parameter VOICE_TICK_COUNT_MAX  = 18_750_000,
+    parameter INITIAL_LIVES         = 3
 )(
-    input  wire CLK100MHZ,
-    input  wire CPU_RESETN,
-    input  wire BTNL,
-    input  wire BTNR,
-
-    output wire VGA_HS,
-    output wire VGA_VS,
-    output wire [3:0] VGA_R,
-    output wire [3:0] VGA_G,
-    output wire [3:0] VGA_B
+    input  wire        CLK100MHZ,
+    input  wire        CPU_RESETN,
+    input  wire        BTNC,
+    input  wire        BTNL,
+    input  wire        BTNR,
+    input  wire [2:0]  SW,
+    input  wire        pdm_data_i,
+    output wire        pdm_clk_o,
+    output wire        pdm_lrsel_o,
+    output wire        VGA_HS,
+    output wire        VGA_VS,
+    output wire [3:0]  VGA_R,
+    output wire [3:0]  VGA_G,
+    output wire [3:0]  VGA_B,
+    output wire [12:0] LED,
+    output wire        CA,
+    output wire        CB,
+    output wire        CC,
+    output wire        CD,
+    output wire        CE,
+    output wire        CF,
+    output wire        CG,
+    output wire        DP,
+    output wire [7:0]  AN
 );
 
-wire clk_25mhz;
+    // --- Voice stubs ---
+    wire [1:0] voice_turn_req  = 2'b00;
+    wire       voice_turn_valid = 1'b0;
+    assign pdm_clk_o   = 1'b0;
+    assign pdm_lrsel_o  = 1'b0;
 
-wire hsync_int;
-wire vsync_int;
-wire [9:0] pixel_x;
-wire [9:0] pixel_y;
-wire video_active;
+    // Unused input
+    wire _pdm_unused = pdm_data_i;
 
-wire [3:0] red_int;
-wire [3:0] green_int;
-wire [3:0] blue_int;
-
-localparam integer INFO_BAR_HEIGHT      = 100;
-
-localparam integer PLAYFIELD_X_START    = 0;
-localparam integer PLAYFIELD_X_END      = 639;
-localparam integer PLAYFIELD_Y_START    = 106;
-localparam integer PLAYFIELD_Y_END      = 473;
-
-localparam integer TILE_SIZE            = 16;
-
-localparam integer ARENA_X_MAX =
-    (PLAYFIELD_X_END - PLAYFIELD_X_START + 1) / TILE_SIZE - 1;  // 39
-localparam integer ARENA_Y_MAX =
-    (PLAYFIELD_Y_END - PLAYFIELD_Y_START + 1) / TILE_SIZE - 1;  // 22
-
-localparam integer INITIAL_SNAKE_LEN    = 4;   // head + 3 body
-localparam integer MAX_SNAKE_LEN        = 8;   // head + 7 body
-
-localparam [5:0] INIT_HEAD_X   = 6'd5;
-localparam [5:0] INIT_HEAD_Y   = 6'd5;
-localparam [5:0] INIT_BODY0_X  = 6'd4;
-localparam [5:0] INIT_BODY0_Y  = 6'd5;
-localparam [5:0] INIT_BODY1_X  = 6'd3;
-localparam [5:0] INIT_BODY1_Y  = 6'd5;
-localparam [5:0] INIT_BODY2_X  = 6'd2;
-localparam [5:0] INIT_BODY2_Y  = 6'd5;
-localparam [1:0] INIT_DIRECTION = 2'b01;   // right
-
-localparam integer OBS0_X               = 20;
-localparam integer OBS0_Y               = 8;
-localparam integer OBS1_X               = 20;
-localparam integer OBS1_Y               = 9;
-localparam integer OBS2_X               = 20;
-localparam integer OBS2_Y               = 10;
-localparam integer OBS3_X               = 21;
-localparam integer OBS3_Y               = 10;
-localparam integer OBS4_X               = 22;
-localparam integer OBS4_Y               = 10;
-
-localparam [5:0] FOOD_CAND0_X = 6'd12, FOOD_CAND0_Y = 6'd10;
-localparam [5:0] FOOD_CAND1_X = 6'd25, FOOD_CAND1_Y = 6'd5;
-localparam [5:0] FOOD_CAND2_X = 6'd8,  FOOD_CAND2_Y = 6'd15;
-localparam [5:0] FOOD_CAND3_X = 6'd30, FOOD_CAND3_Y = 6'd3;
-
-wire info_bar_region;
-wire playfield_region;
-wire playfield_border_region;
-wire lower_bg_region;
-wire outer_visible_border_region;
-
-wire snake_head_region;
-wire snake_body_region;
-wire food_region;
-wire obstacle_region;
-
-// Game state registers
-reg [5:0] head_x,  head_y;
-reg [5:0] body0_x, body0_y;
-reg [5:0] body1_x, body1_y;
-reg [5:0] body2_x, body2_y;
-reg [5:0] body3_x, body3_y;
-reg [5:0] body4_x, body4_y;
-reg [5:0] body5_x, body5_y;
-reg [5:0] body6_x, body6_y;
-reg [1:0] direction;  // 00=up, 01=right, 10=down, 11=left
-reg       game_over;
-reg [5:0] food_x, food_y;
-reg [1:0] food_idx;
-reg [3:0] snake_len;
-reg [7:0] score;
-reg [1:0] lives;
-
-// --- Occupancy check functions ---
-
-function obstacle_occupies_tile;
-    input [5:0] tx;
-    input [5:0] ty;
-    obstacle_occupies_tile =
-        (tx == OBS0_X && ty == OBS0_Y) ||
-        (tx == OBS1_X && ty == OBS1_Y) ||
-        (tx == OBS2_X && ty == OBS2_Y) ||
-        (tx == OBS3_X && ty == OBS3_Y) ||
-        (tx == OBS4_X && ty == OBS4_Y);
-endfunction
-
-function visible_body_occupies_tile;
-    input [5:0] tx;
-    input [5:0] ty;
-    visible_body_occupies_tile =
-        (tx == body0_x && ty == body0_y) ||
-        (tx == body1_x && ty == body1_y) ||
-        (tx == body2_x && ty == body2_y) ||
-        (snake_len > INITIAL_SNAKE_LEN     && tx == body3_x && ty == body3_y) ||
-        (snake_len > INITIAL_SNAKE_LEN + 1 && tx == body4_x && ty == body4_y) ||
-        (snake_len > INITIAL_SNAKE_LEN + 2 && tx == body5_x && ty == body5_y) ||
-        (snake_len > INITIAL_SNAKE_LEN + 3 && tx == body6_x && ty == body6_y);
-endfunction
-
-function snake_occupies_tile;
-    input [5:0] tx;
-    input [5:0] ty;
-    snake_occupies_tile =
-        (tx == head_x && ty == head_y) ||
-        visible_body_occupies_tile(tx, ty);
-endfunction
-
-// Post-move body occupancy (assumes growth, used only for food selection on eat ticks).
-// body0_next = head, body1_next = body0, ..., body_N_next = body_(N-1).
-// Visibility uses post-growth snake_len + 1.
-function next_visible_body_occupies_tile;
-    input [5:0] tx;
-    input [5:0] ty;
-    next_visible_body_occupies_tile =
-        (tx == head_x  && ty == head_y)  ||  // body0 after shift
-        (tx == body0_x && ty == body0_y) ||  // body1 after shift
-        (tx == body1_x && ty == body1_y) ||  // body2 after shift
-        (tx == body2_x && ty == body2_y) ||  // body3 after shift (always visible post-growth)
-        (snake_len > INITIAL_SNAKE_LEN     && tx == body3_x && ty == body3_y) ||  // body4
-        (snake_len > INITIAL_SNAKE_LEN + 1 && tx == body4_x && ty == body4_y) ||  // body5
-        (snake_len > INITIAL_SNAKE_LEN + 2 && tx == body5_x && ty == body5_y);    // body6
-endfunction
-
-function next_snake_occupies_tile;
-    input [5:0] tx;
-    input [5:0] ty;
-    next_snake_occupies_tile =
-        (tx == next_head_x && ty == next_head_y) ||  // head after move
-        next_visible_body_occupies_tile(tx, ty);
-endfunction
-
-// --- Food candidate lookup functions ---
-
-function [5:0] food_cand_x;
-    input [1:0] idx;
-    case (idx)
-        2'd0:    food_cand_x = FOOD_CAND0_X;
-        2'd1:    food_cand_x = FOOD_CAND1_X;
-        2'd2:    food_cand_x = FOOD_CAND2_X;
-        2'd3:    food_cand_x = FOOD_CAND3_X;
-        default: food_cand_x = FOOD_CAND0_X;
-    endcase
-endfunction
-
-function [5:0] food_cand_y;
-    input [1:0] idx;
-    case (idx)
-        2'd0:    food_cand_y = FOOD_CAND0_Y;
-        2'd1:    food_cand_y = FOOD_CAND1_Y;
-        2'd2:    food_cand_y = FOOD_CAND2_Y;
-        2'd3:    food_cand_y = FOOD_CAND3_Y;
-        default: food_cand_y = FOOD_CAND0_Y;
-    endcase
-endfunction
-
-clk_divider u_clk_divider (
-    .clk_in   (CLK100MHZ),
-    .reset_n  (CPU_RESETN),
-    .clk_out  (clk_25mhz)
-);
-
-vga_controller u_vga_controller (
-    .clk_pix      (clk_25mhz),
-    .reset_n      (CPU_RESETN),
-    .hsync        (hsync_int),
-    .vsync        (vsync_int),
-    .pixel_x      (pixel_x),
-    .pixel_y      (pixel_y),
-    .video_active (video_active)
-);
-
-// --- Game tick counter ---
-reg [31:0] tick_counter;
-wire game_tick = (tick_counter == GAME_TICK_COUNT_MAX - 1);
-
-always @(posedge clk_25mhz or negedge CPU_RESETN) begin
-    if (!CPU_RESETN)
-        tick_counter <= 32'd0;
-    else if (game_tick)
-        tick_counter <= 32'd0;
-    else
-        tick_counter <= tick_counter + 32'd1;
-end
-
-// --- Rising-edge detection for buttons ---
-reg btnl_prev, btnr_prev;
-
-always @(posedge clk_25mhz or negedge CPU_RESETN) begin
-    if (!CPU_RESETN) begin
-        btnl_prev <= 1'b0;
-        btnr_prev <= 1'b0;
-    end else begin
-        btnl_prev <= BTNL;
-        btnr_prev <= BTNR;
-    end
-end
-
-wire btnl_rise = BTNL & ~btnl_prev;
-wire btnr_rise = BTNR & ~btnr_prev;
-
-// --- Turn request latches ---
-reg turn_left_pending;
-reg turn_right_pending;
-
-always @(posedge clk_25mhz or negedge CPU_RESETN) begin
-    if (!CPU_RESETN) begin
-        turn_left_pending  <= 1'b0;
-        turn_right_pending <= 1'b0;
-    end else if (game_tick) begin
-        turn_left_pending  <= 1'b0;
-        turn_right_pending <= 1'b0;
-    end else begin
-        if (btnl_rise) turn_left_pending  <= 1'b1;
-        if (btnr_rise) turn_right_pending <= 1'b1;
-    end
-end
-
-// --- Next direction (relative turning, BTNL priority) ---
-wire [1:0] next_direction = turn_left_pending  ? (direction - 2'd1) :
-                            turn_right_pending ? (direction + 2'd1) :
-                            direction;
-
-// --- Next head position (unclamped) ---
-reg [5:0] next_head_x, next_head_y;
-
-always @(*) begin
-    next_head_x = head_x;
-    next_head_y = head_y;
-    case (next_direction)
-        2'b00: next_head_y = head_y - 6'd1;
-        2'b01: next_head_x = head_x + 6'd1;
-        2'b10: next_head_y = head_y + 6'd1;
-        2'b11: next_head_x = head_x - 6'd1;
-    endcase
-end
-
-// --- Collision detection ---
-wire would_hit_wall =
-    (next_direction == 2'b00 && head_y == 0) ||
-    (next_direction == 2'b01 && head_x == ARENA_X_MAX) ||
-    (next_direction == 2'b10 && head_y == ARENA_Y_MAX) ||
-    (next_direction == 2'b11 && head_x == 0);
-
-wire would_hit_obstacle = obstacle_occupies_tile(next_head_x, next_head_y);
-
-// --- Food collection detection ---
-wire ate_food = (next_head_x == food_x) && (next_head_y == food_y);
-
-// --- Tail position lookup (for tail-vacate suppression) ---
-reg [5:0] tail_x, tail_y;
-always @(*) begin
-    case (snake_len)
-        4'd4:    begin tail_x = body2_x; tail_y = body2_y; end
-        4'd5:    begin tail_x = body3_x; tail_y = body3_y; end
-        4'd6:    begin tail_x = body4_x; tail_y = body4_y; end
-        4'd7:    begin tail_x = body5_x; tail_y = body5_y; end
-        4'd8:    begin tail_x = body6_x; tail_y = body6_y; end
-        default: begin tail_x = body2_x; tail_y = body2_y; end
-    endcase
-end
-
-wire next_head_is_tail = (next_head_x == tail_x) && (next_head_y == tail_y);
-wire would_hit_body_raw = visible_body_occupies_tile(next_head_x, next_head_y);
-// On non-eating ticks the tail vacates its tile, so moving there is safe
-wire would_hit_body = would_hit_body_raw && (ate_food || !next_head_is_tail);
-
-wire any_collision = would_hit_wall || would_hit_obstacle || would_hit_body;
-
-// --- Safe food selection (post-move occupancy check) ---
-wire [1:0] cand_try1 = food_idx + 2'd1;
-wire [1:0] cand_try2 = food_idx + 2'd2;
-wire [1:0] cand_try3 = food_idx + 2'd3;
-
-wire cand1_safe = !obstacle_occupies_tile(food_cand_x(cand_try1), food_cand_y(cand_try1)) &&
-                  !next_snake_occupies_tile(food_cand_x(cand_try1), food_cand_y(cand_try1));
-wire cand2_safe = !obstacle_occupies_tile(food_cand_x(cand_try2), food_cand_y(cand_try2)) &&
-                  !next_snake_occupies_tile(food_cand_x(cand_try2), food_cand_y(cand_try2));
-wire cand3_safe = !obstacle_occupies_tile(food_cand_x(cand_try3), food_cand_y(cand_try3)) &&
-                  !next_snake_occupies_tile(food_cand_x(cand_try3), food_cand_y(cand_try3));
-
-wire [1:0] next_food_idx = cand1_safe ? cand_try1 :
-                           cand2_safe ? cand_try2 :
-                           cand3_safe ? cand_try3 :
-                                        cand_try1;  // fallback
-
-wire [5:0] next_food_x = food_cand_x(next_food_idx);
-wire [5:0] next_food_y = food_cand_y(next_food_idx);
-
-// --- Game state update ---
-always @(posedge clk_25mhz or negedge CPU_RESETN) begin
-    if (!CPU_RESETN) begin
-        head_x    <= INIT_HEAD_X;   head_y    <= INIT_HEAD_Y;
-        body0_x   <= INIT_BODY0_X;  body0_y   <= INIT_BODY0_Y;
-        body1_x   <= INIT_BODY1_X;  body1_y   <= INIT_BODY1_Y;
-        body2_x   <= INIT_BODY2_X;  body2_y   <= INIT_BODY2_Y;
-        body3_x   <= 6'd0;          body3_y   <= 6'd0;
-        body4_x   <= 6'd0;          body4_y   <= 6'd0;
-        body5_x   <= 6'd0;          body5_y   <= 6'd0;
-        body6_x   <= 6'd0;          body6_y   <= 6'd0;
-        direction <= INIT_DIRECTION;
-        game_over <= 1'b0;
-        food_x    <= FOOD_CAND0_X;  food_y <= FOOD_CAND0_Y;
-        food_idx  <= 2'd0;
-        snake_len <= INITIAL_SNAKE_LEN;
-        score     <= 8'd0;
-        lives     <= INITIAL_LIVES;
-    end else if (game_tick && !game_over) begin
-        if (any_collision) begin
-            if (lives <= 2'd1) begin
-                game_over <= 1'b1;
-                lives     <= 2'd0;
-            end else begin
-                lives     <= lives - 2'd1;
-                head_x    <= INIT_HEAD_X;   head_y    <= INIT_HEAD_Y;
-                body0_x   <= INIT_BODY0_X;  body0_y   <= INIT_BODY0_Y;
-                body1_x   <= INIT_BODY1_X;  body1_y   <= INIT_BODY1_Y;
-                body2_x   <= INIT_BODY2_X;  body2_y   <= INIT_BODY2_Y;
-                body3_x   <= 6'd0;          body3_y   <= 6'd0;
-                body4_x   <= 6'd0;          body4_y   <= 6'd0;
-                body5_x   <= 6'd0;          body5_y   <= 6'd0;
-                body6_x   <= 6'd0;          body6_y   <= 6'd0;
-                direction <= INIT_DIRECTION;
-                food_x    <= FOOD_CAND0_X;  food_y <= FOOD_CAND0_Y;
-                food_idx  <= 2'd0;
-                snake_len <= INITIAL_SNAKE_LEN;
-                // score intentionally NOT assigned — preserved across lives
-            end
+    // --- Switch synchroniser ---
+    reg [2:0] sw_s1, sw_s2;
+    always @(posedge clk_25mhz or negedge CPU_RESETN) begin
+        if (!CPU_RESETN) begin
+            sw_s1 <= 3'b0;  sw_s2 <= 3'b0;
         end else begin
-            direction <= next_direction;
-            head_x  <= next_head_x;
-            head_y  <= next_head_y;
-            body0_x <= head_x;
-            body0_y <= head_y;
-            body1_x <= body0_x;
-            body1_y <= body0_y;
-            body2_x <= body1_x;
-            body2_y <= body1_y;
-            body3_x <= body2_x;
-            body3_y <= body2_y;
-            body4_x <= body3_x;
-            body4_y <= body3_y;
-            body5_x <= body4_x;
-            body5_y <= body4_y;
-            body6_x <= body5_x;
-            body6_y <= body5_y;
-            if (ate_food) begin
-                food_x   <= next_food_x;
-                food_y   <= next_food_y;
-                food_idx <= next_food_idx;
-                if (snake_len < MAX_SNAKE_LEN)
-                    snake_len <= snake_len + 4'd1;
-                if (score < 8'hFF)
-                    score <= score + 8'd1;
-            end
+            sw_s1 <= SW;    sw_s2 <= sw_s1;
         end
     end
-end
+    wire pause_sw      = sw_s2[0];
+    wire debug_mode    = sw_s2[1];
+    wire voice_mode_en = sw_s2[2];
 
-// --- Region flags ---
-assign info_bar_region =
-    video_active && (pixel_y < INFO_BAR_HEIGHT);
+    // --- Clock divider (preserved) ---
+    wire clk_25mhz;
 
-assign playfield_region =
-    video_active &&
-    (pixel_x >= PLAYFIELD_X_START) && (pixel_x <= PLAYFIELD_X_END) &&
-    (pixel_y >= PLAYFIELD_Y_START) && (pixel_y <= PLAYFIELD_Y_END);
-
-assign playfield_border_region =
-    playfield_region &&
-    (
-        (pixel_x == PLAYFIELD_X_START) || (pixel_x == PLAYFIELD_X_END) ||
-        (pixel_y == PLAYFIELD_Y_START) || (pixel_y == PLAYFIELD_Y_END)
+    clk_divider u_clk_divider (
+        .clk_in  (CLK100MHZ),
+        .reset_n (CPU_RESETN),
+        .clk_out (clk_25mhz)
     );
 
-assign lower_bg_region =
-    video_active &&
-    (pixel_y >= INFO_BAR_HEIGHT) &&
-    !playfield_region;
+    // --- VGA controller (preserved) ---
+    wire [9:0] pixel_x, pixel_y;
+    wire       hsync_int, vsync_int, video_active;
 
-assign outer_visible_border_region =
-    video_active &&
-    (
-        (pixel_x == 10'd0)   || (pixel_x == 10'd639) ||
-        (pixel_y == 10'd0)   || (pixel_y == 10'd479)
+    vga_controller u_vga_controller (
+        .clk_pix      (clk_25mhz),
+        .reset_n      (CPU_RESETN),
+        .pixel_x      (pixel_x),
+        .pixel_y      (pixel_y),
+        .hsync        (hsync_int),
+        .vsync        (vsync_int),
+        .video_active (video_active)
     );
 
-assign snake_head_region =
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + head_x * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (head_x + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + head_y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (head_y + 1) * TILE_SIZE));
+    // --- Game state wires (declared early for tick_enable) ---
+    wire [2:0]  fsm_state;
 
-wire snake_body0_region;
-wire snake_body1_region;
-wire snake_body2_region;
-wire snake_body3_region;
-wire snake_body4_region;
-wire snake_body5_region;
-wire snake_body6_region;
+    // --- Game tick generator ---
+    wire tick_enable = (fsm_state == 3'd1);  // PLAYING only
+    wire game_tick;
 
-assign snake_body0_region =
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + body0_x * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (body0_x + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + body0_y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (body0_y + 1) * TILE_SIZE));
+    game_tick_gen #(
+        .BUTTON_TICK_MAX (BUTTON_TICK_COUNT_MAX),
+        .VOICE_TICK_MAX  (VOICE_TICK_COUNT_MAX)
+    ) u_tick_gen (
+        .clk           (clk_25mhz),
+        .reset_n       (CPU_RESETN),
+        .enable        (tick_enable),
+        .voice_mode_en (voice_mode_en),
+        .game_tick     (game_tick)
+    );
 
-assign snake_body1_region =
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + body1_x * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (body1_x + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + body1_y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (body1_y + 1) * TILE_SIZE));
+    // --- Button input adapter ---
+    wire [1:0] btn_turn_req;
+    wire       btn_turn_valid;
+    wire       start_btn;
 
-assign snake_body2_region =
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + body2_x * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (body2_x + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + body2_y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (body2_y + 1) * TILE_SIZE));
+    button_input_adapter u_btn_adapter (
+        .clk       (clk_25mhz),
+        .reset_n   (CPU_RESETN),
+        .btnl_raw  (BTNL),
+        .btnr_raw  (BTNR),
+        .btnc_raw  (BTNC),
+        .turn_req  (btn_turn_req),
+        .turn_valid(btn_turn_valid),
+        .start_btn (start_btn)
+    );
 
-assign snake_body3_region =
-    (snake_len > INITIAL_SNAKE_LEN) &&
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + body3_x * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (body3_x + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + body3_y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (body3_y + 1) * TILE_SIZE));
+    // --- Turn request mux ---
+    wire [1:0] player_turn_req;
+    wire       player_turn_valid;
+    wire [1:0] turn_source;
 
-assign snake_body4_region =
-    (snake_len > INITIAL_SNAKE_LEN + 1) &&
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + body4_x * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (body4_x + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + body4_y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (body4_y + 1) * TILE_SIZE));
+    turn_request_mux u_turn_mux (
+        .btn_turn_req    (btn_turn_req),
+        .btn_turn_valid  (btn_turn_valid),
+        .voice_turn_req  (voice_turn_req),
+        .voice_turn_valid(voice_turn_valid),
+        .player_turn_req (player_turn_req),
+        .player_turn_valid(player_turn_valid),
+        .turn_source     (turn_source)
+    );
 
-assign snake_body5_region =
-    (snake_len > INITIAL_SNAKE_LEN + 2) &&
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + body5_x * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (body5_x + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + body5_y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (body5_y + 1) * TILE_SIZE));
+    // --- Game state wires (fsm_state declared above for tick_enable) ---
+    wire [5:0]  p_head_x, p_head_y;
+    wire [5:0]  p_body0_x, p_body0_y, p_body1_x, p_body1_y;
+    wire [5:0]  p_body2_x, p_body2_y, p_body3_x, p_body3_y;
+    wire [5:0]  p_body4_x, p_body4_y, p_body5_x, p_body5_y;
+    wire [5:0]  p_body6_x, p_body6_y;
+    wire [1:0]  p_direction;
+    wire [3:0]  p_length;
+    wire [1:0]  p_lives;
+    wire [5:0]  r_head_x, r_head_y;
+    wire [5:0]  r_body0_x, r_body0_y, r_body1_x, r_body1_y;
+    wire [5:0]  r_body2_x, r_body2_y, r_body3_x, r_body3_y;
+    wire [5:0]  r_body4_x, r_body4_y, r_body5_x, r_body5_y;
+    wire [5:0]  r_body6_x, r_body6_y;
+    wire [1:0]  r_direction;
+    wire [3:0]  r_length;
+    wire [1:0]  r_lives;
+    wire [5:0]  food_x, food_y;
+    wire [1:0]  last_turn_source;
+    wire [1:0]  last_player_cmd;
+    wire        dbg_p_turn_accepted, dbg_r_dir_changed;
+    wire        dbg_p_collision, dbg_r_collision;
+    wire        dbg_p_ate, dbg_r_ate;
 
-assign snake_body6_region =
-    (snake_len > INITIAL_SNAKE_LEN + 3) &&
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + body6_x * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (body6_x + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + body6_y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (body6_y + 1) * TILE_SIZE));
+    // --- Rival AI ---
+    wire [1:0] rival_turn_req;
 
-assign snake_body_region =
-    snake_body0_region || snake_body1_region || snake_body2_region ||
-    snake_body3_region || snake_body4_region || snake_body5_region ||
-    snake_body6_region;
+    rival_ai_simple u_rival_ai (
+        .r_direction(r_direction),
+        .r_head_x(r_head_x), .r_head_y(r_head_y),
+        .r_body0_x(r_body0_x), .r_body0_y(r_body0_y),
+        .r_body1_x(r_body1_x), .r_body1_y(r_body1_y),
+        .r_body2_x(r_body2_x), .r_body2_y(r_body2_y),
+        .r_body3_x(r_body3_x), .r_body3_y(r_body3_y),
+        .r_body4_x(r_body4_x), .r_body4_y(r_body4_y),
+        .r_body5_x(r_body5_x), .r_body5_y(r_body5_y),
+        .r_body6_x(r_body6_x), .r_body6_y(r_body6_y),
+        .r_length(r_length),
+        .p_head_x(p_head_x), .p_head_y(p_head_y),
+        .p_body0_x(p_body0_x), .p_body0_y(p_body0_y),
+        .p_body1_x(p_body1_x), .p_body1_y(p_body1_y),
+        .p_body2_x(p_body2_x), .p_body2_y(p_body2_y),
+        .p_body3_x(p_body3_x), .p_body3_y(p_body3_y),
+        .p_body4_x(p_body4_x), .p_body4_y(p_body4_y),
+        .p_body5_x(p_body5_x), .p_body5_y(p_body5_y),
+        .p_body6_x(p_body6_x), .p_body6_y(p_body6_y),
+        .p_length(p_length),
+        .food_x(food_x), .food_y(food_y),
+        .rival_turn_req(rival_turn_req)
+    );
 
-assign food_region =
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + food_x * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (food_x + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + food_y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (food_y + 1) * TILE_SIZE));
+    // --- Snake game core ---
+    snake_game_core #(
+        .INITIAL_LIVES(INITIAL_LIVES)
+    ) u_game_core (
+        .clk(clk_25mhz), .reset_n(CPU_RESETN),
+        .game_tick(game_tick), .start_btn(start_btn), .pause_sw(pause_sw),
+        .player_turn_req(player_turn_req), .player_turn_valid(player_turn_valid),
+        .turn_source_in(turn_source),
+        .rival_turn_req(rival_turn_req),
+        .fsm_state(fsm_state),
+        .p_head_x(p_head_x), .p_head_y(p_head_y),
+        .p_body0_x(p_body0_x), .p_body0_y(p_body0_y),
+        .p_body1_x(p_body1_x), .p_body1_y(p_body1_y),
+        .p_body2_x(p_body2_x), .p_body2_y(p_body2_y),
+        .p_body3_x(p_body3_x), .p_body3_y(p_body3_y),
+        .p_body4_x(p_body4_x), .p_body4_y(p_body4_y),
+        .p_body5_x(p_body5_x), .p_body5_y(p_body5_y),
+        .p_body6_x(p_body6_x), .p_body6_y(p_body6_y),
+        .p_direction(p_direction), .p_length(p_length), .p_lives(p_lives),
+        .r_head_x(r_head_x), .r_head_y(r_head_y),
+        .r_body0_x(r_body0_x), .r_body0_y(r_body0_y),
+        .r_body1_x(r_body1_x), .r_body1_y(r_body1_y),
+        .r_body2_x(r_body2_x), .r_body2_y(r_body2_y),
+        .r_body3_x(r_body3_x), .r_body3_y(r_body3_y),
+        .r_body4_x(r_body4_x), .r_body4_y(r_body4_y),
+        .r_body5_x(r_body5_x), .r_body5_y(r_body5_y),
+        .r_body6_x(r_body6_x), .r_body6_y(r_body6_y),
+        .r_direction(r_direction), .r_length(r_length), .r_lives(r_lives),
+        .food_x(food_x), .food_y(food_y),
+        .last_turn_source(last_turn_source), .last_player_cmd(last_player_cmd),
+        .dbg_p_turn_accepted(dbg_p_turn_accepted),
+        .dbg_r_dir_changed(dbg_r_dir_changed),
+        .dbg_p_collision(dbg_p_collision),
+        .dbg_r_collision(dbg_r_collision),
+        .dbg_p_ate(dbg_p_ate),
+        .dbg_r_ate(dbg_r_ate)
+    );
 
-// Static obstacles
-wire obstacle0_region;
-wire obstacle1_region;
-wire obstacle2_region;
-wire obstacle3_region;
-wire obstacle4_region;
+    // --- Sprite ROMs ---
+    // Player head (4 directions)
+    wire [7:0]  p_head_sprite_addr;
+    wire [11:0] p_head_up_data, p_head_right_data, p_head_down_data, p_head_left_data;
 
-assign obstacle0_region =
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + OBS0_X * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (OBS0_X + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + OBS0_Y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (OBS0_Y + 1) * TILE_SIZE));
+    sprite_rom #(.SPRITE_FILE("Snake_head_up.mem"),    .DEPTH(256)) u_p_head_up   (.clk(clk_25mhz), .addr(p_head_sprite_addr), .data(p_head_up_data));
+    sprite_rom #(.SPRITE_FILE("Snake_head_right.mem"), .DEPTH(256)) u_p_head_right(.clk(clk_25mhz), .addr(p_head_sprite_addr), .data(p_head_right_data));
+    sprite_rom #(.SPRITE_FILE("Snake_head_down.mem"),  .DEPTH(256)) u_p_head_down (.clk(clk_25mhz), .addr(p_head_sprite_addr), .data(p_head_down_data));
+    sprite_rom #(.SPRITE_FILE("Snake_head_left.mem"),  .DEPTH(256)) u_p_head_left (.clk(clk_25mhz), .addr(p_head_sprite_addr), .data(p_head_left_data));
 
-assign obstacle1_region =
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + OBS1_X * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (OBS1_X + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + OBS1_Y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (OBS1_Y + 1) * TILE_SIZE));
+    // Direction MUX for player head
+    reg [11:0] p_head_sprite_data;
+    always @(*) begin
+        case (p_direction)
+            2'b00: p_head_sprite_data = p_head_up_data;
+            2'b01: p_head_sprite_data = p_head_right_data;
+            2'b10: p_head_sprite_data = p_head_down_data;
+            2'b11: p_head_sprite_data = p_head_left_data;
+        endcase
+    end
 
-assign obstacle2_region =
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + OBS2_X * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (OBS2_X + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + OBS2_Y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (OBS2_Y + 1) * TILE_SIZE));
+    // Rival head (4 directions)
+    wire [7:0]  r_head_sprite_addr;
+    wire [11:0] r_head_up_data, r_head_right_data, r_head_down_data, r_head_left_data;
 
-assign obstacle3_region =
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + OBS3_X * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (OBS3_X + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + OBS3_Y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (OBS3_Y + 1) * TILE_SIZE));
+    sprite_rom #(.SPRITE_FILE("Bot_Snake_head_up.mem"),    .DEPTH(256)) u_r_head_up   (.clk(clk_25mhz), .addr(r_head_sprite_addr), .data(r_head_up_data));
+    sprite_rom #(.SPRITE_FILE("Bot_Snake_head_right.mem"), .DEPTH(256)) u_r_head_right(.clk(clk_25mhz), .addr(r_head_sprite_addr), .data(r_head_right_data));
+    sprite_rom #(.SPRITE_FILE("Bot_Snake_head_down.mem"),  .DEPTH(256)) u_r_head_down (.clk(clk_25mhz), .addr(r_head_sprite_addr), .data(r_head_down_data));
+    sprite_rom #(.SPRITE_FILE("Bot_Snake_head_left.mem"),  .DEPTH(256)) u_r_head_left (.clk(clk_25mhz), .addr(r_head_sprite_addr), .data(r_head_left_data));
 
-assign obstacle4_region =
-    playfield_region &&
-    (pixel_x >= (PLAYFIELD_X_START + OBS4_X * TILE_SIZE)) &&
-    (pixel_x <  (PLAYFIELD_X_START + (OBS4_X + 1) * TILE_SIZE)) &&
-    (pixel_y >= (PLAYFIELD_Y_START + OBS4_Y * TILE_SIZE)) &&
-    (pixel_y <  (PLAYFIELD_Y_START + (OBS4_Y + 1) * TILE_SIZE));
+    reg [11:0] r_head_sprite_data;
+    always @(*) begin
+        case (r_direction)
+            2'b00: r_head_sprite_data = r_head_up_data;
+            2'b01: r_head_sprite_data = r_head_right_data;
+            2'b10: r_head_sprite_data = r_head_down_data;
+            2'b11: r_head_sprite_data = r_head_left_data;
+        endcase
+    end
 
-assign obstacle_region =
-    obstacle0_region || obstacle1_region || obstacle2_region ||
-    obstacle3_region || obstacle4_region;
+    // Food sprite
+    wire [7:0]  food_sprite_addr;
+    wire [11:0] food_sprite_data;
+    sprite_rom #(.SPRITE_FILE("apple.mem"), .DEPTH(256)) u_food_sprite (.clk(clk_25mhz), .addr(food_sprite_addr), .data(food_sprite_data));
 
-// Colour priority:
-// 1. outside active video -> black
-// 2. outer visible border -> white
-// 3. info bar -> yellow
-// 4. playfield border -> white
-// 5. snake head -> red
-// 6. snake body -> green
-// 7. food -> yellow
-// 8. obstacles -> magenta
-// 9. playfield interior -> dark grey
-// 10. lower background -> blue
+    // Obstacle sprite
+    wire [7:0]  obstacle_sprite_addr;
+    wire [11:0] obstacle_sprite_data;
+    sprite_rom #(.SPRITE_FILE("Obstacle.mem"), .DEPTH(256)) u_obs_sprite (.clk(clk_25mhz), .addr(obstacle_sprite_addr), .data(obstacle_sprite_data));
 
-assign red_int =
-    !video_active               ? 4'h0 :
-    outer_visible_border_region ? 4'hF :
-    info_bar_region             ? 4'hF :
-    playfield_border_region     ? 4'hF :
-    snake_head_region           ? 4'hF :
-    snake_body_region           ? 4'h0 :
-    food_region                 ? 4'hF :
-    obstacle_region             ? 4'hF :
-    playfield_region            ? 4'h1 :
-    lower_bg_region             ? 4'h0 :
-                                  4'h0;
+    // Life icon sprite
+    wire [7:0]  life_sprite_addr;
+    wire [11:0] life_sprite_data;
+    sprite_rom #(.SPRITE_FILE("live.mem"), .DEPTH(256)) u_life_sprite (.clk(clk_25mhz), .addr(life_sprite_addr), .data(life_sprite_data));
 
-assign green_int =
-    !video_active               ? 4'h0 :
-    outer_visible_border_region ? 4'hF :
-    info_bar_region             ? (game_over ? 4'h0 : 4'hF) :
-    playfield_border_region     ? 4'hF :
-    snake_head_region           ? 4'h0 :
-    snake_body_region           ? 4'hF :
-    food_region                 ? 4'hF :
-    obstacle_region             ? 4'h0 :
-    playfield_region            ? 4'h1 :
-    lower_bg_region             ? 4'h0 :
-                                  4'h0;
+    // Victory banner (312x40 = 12480, block ROM)
+    wire [13:0] victory_sprite_addr;
+    wire [11:0] victory_sprite_data;
+    sprite_rom #(.SPRITE_FILE("victory.mem"), .DEPTH(12480), .WIDTH(312), .USE_BLOCK_ROM(1))
+        u_victory_sprite (.clk(clk_25mhz), .addr(victory_sprite_addr), .data(victory_sprite_data));
 
-assign blue_int =
-    !video_active               ? 4'h0 :
-    outer_visible_border_region ? 4'hF :
-    info_bar_region             ? 4'h0 :
-    playfield_border_region     ? 4'hF :
-    snake_head_region           ? 4'h0 :
-    snake_body_region           ? 4'h0 :
-    food_region                 ? 4'h0 :
-    obstacle_region             ? 4'hF :
-    playfield_region            ? 4'h1 :
-    lower_bg_region             ? 4'hF :
-                                  4'h0;
+    // Game Over banner (368x40 = 14720, block ROM)
+    wire [13:0] gameover_sprite_addr;
+    wire [11:0] gameover_sprite_data;
+    sprite_rom #(.SPRITE_FILE("gameOver.mem"), .DEPTH(14720), .WIDTH(368), .USE_BLOCK_ROM(1))
+        u_gameover_sprite (.clk(clk_25mhz), .addr(gameover_sprite_addr), .data(gameover_sprite_data));
 
-assign VGA_HS = hsync_int;
-assign VGA_VS = vsync_int;
-assign VGA_R  = red_int;
-assign VGA_G  = green_int;
-assign VGA_B  = blue_int;
+    // --- Info bar renderer ---
+    wire        info_active;
+    wire [11:0] info_rgb;
+
+    info_bar_renderer u_info_bar (
+        .clk(clk_25mhz), .reset_n(CPU_RESETN),
+        .pixel_x(pixel_x), .pixel_y(pixel_y),
+        .video_active(video_active),
+        .fsm_state(fsm_state),
+        .p_length(p_length), .p_lives(p_lives),
+        .r_length(r_length), .r_lives(r_lives),
+        .last_player_cmd(last_player_cmd),
+        .last_turn_source(last_turn_source),
+        .voice_mode_en(voice_mode_en),
+        .life_sprite_addr(life_sprite_addr),
+        .life_sprite_data(life_sprite_data),
+        .info_active(info_active),
+        .info_rgb(info_rgb)
+    );
+
+    // --- Pixel renderer ---
+    pixel_renderer u_renderer (
+        .clk(clk_25mhz),
+        .pixel_x(pixel_x), .pixel_y(pixel_y),
+        .video_active(video_active),
+        .fsm_state(fsm_state),
+        .p_head_x(p_head_x), .p_head_y(p_head_y),
+        .p_body0_x(p_body0_x), .p_body0_y(p_body0_y),
+        .p_body1_x(p_body1_x), .p_body1_y(p_body1_y),
+        .p_body2_x(p_body2_x), .p_body2_y(p_body2_y),
+        .p_body3_x(p_body3_x), .p_body3_y(p_body3_y),
+        .p_body4_x(p_body4_x), .p_body4_y(p_body4_y),
+        .p_body5_x(p_body5_x), .p_body5_y(p_body5_y),
+        .p_body6_x(p_body6_x), .p_body6_y(p_body6_y),
+        .p_direction(p_direction), .p_length(p_length),
+        .r_head_x(r_head_x), .r_head_y(r_head_y),
+        .r_body0_x(r_body0_x), .r_body0_y(r_body0_y),
+        .r_body1_x(r_body1_x), .r_body1_y(r_body1_y),
+        .r_body2_x(r_body2_x), .r_body2_y(r_body2_y),
+        .r_body3_x(r_body3_x), .r_body3_y(r_body3_y),
+        .r_body4_x(r_body4_x), .r_body4_y(r_body4_y),
+        .r_body5_x(r_body5_x), .r_body5_y(r_body5_y),
+        .r_body6_x(r_body6_x), .r_body6_y(r_body6_y),
+        .r_direction(r_direction), .r_length(r_length),
+        .food_x(food_x), .food_y(food_y),
+        .info_active(info_active), .info_rgb(info_rgb),
+        .p_head_sprite_data(p_head_sprite_data),
+        .p_head_sprite_addr(p_head_sprite_addr),
+        .r_head_sprite_data(r_head_sprite_data),
+        .r_head_sprite_addr(r_head_sprite_addr),
+        .food_sprite_data(food_sprite_data),
+        .food_sprite_addr(food_sprite_addr),
+        .obstacle_sprite_data(obstacle_sprite_data),
+        .obstacle_sprite_addr(obstacle_sprite_addr),
+        .victory_sprite_data(victory_sprite_data),
+        .victory_sprite_addr(victory_sprite_addr),
+        .gameover_sprite_data(gameover_sprite_data),
+        .gameover_sprite_addr(gameover_sprite_addr),
+        .vga_r(VGA_R), .vga_g(VGA_G), .vga_b(VGA_B)
+    );
+
+    assign VGA_HS = hsync_int;
+    assign VGA_VS = vsync_int;
+
+    // --- Seven-segment driver ---
+    wire [6:0] seg_out;
+
+    seven_seg_driver u_seven_seg (
+        .clk(clk_25mhz), .reset_n(CPU_RESETN),
+        .p_length(p_length), .p_lives(p_lives),
+        .r_length(r_length), .r_lives(r_lives),
+        .seg(seg_out), .dp(DP), .an(AN)
+    );
+
+    assign CA = seg_out[0];
+    assign CB = seg_out[1];
+    assign CC = seg_out[2];
+    assign CD = seg_out[3];
+    assign CE = seg_out[4];
+    assign CF = seg_out[5];
+    assign CG = seg_out[6];
+
+    // --- LED status driver ---
+    led_status_driver u_led_driver (
+        .debug_mode(debug_mode),
+        .voice_ready(voice_mode_en),
+        .fsm_state(fsm_state),
+        .p_lives(p_lives), .r_lives(r_lives),
+        .p_direction(p_direction), .r_direction(r_direction),
+        .dbg_p_turn_accepted(dbg_p_turn_accepted),
+        .dbg_r_dir_changed(dbg_r_dir_changed),
+        .dbg_p_collision(dbg_p_collision),
+        .dbg_r_collision(dbg_r_collision),
+        .dbg_p_ate(dbg_p_ate),
+        .dbg_r_ate(dbg_r_ate),
+        .led(LED)
+    );
 
 endmodule
