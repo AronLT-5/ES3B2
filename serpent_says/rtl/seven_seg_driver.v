@@ -26,7 +26,13 @@ module seven_seg_driver (
 
     wire [2:0] digit_sel = refresh_cnt[16:14];
 
-    // Digit values
+    // Score = length - 2 (initial length is 2, max score 6)
+    wire [3:0] p_score = (p_length >= 4'd2) ? (p_length - 4'd2) : 4'd0;
+    wire [3:0] r_score = (r_length >= 4'd2) ? (r_length - 4'd2) : 4'd0;
+
+    // 8-digit layout (AN[7]=leftmost, AN[0]=rightmost on Nexys 4 DDR):
+    //   Left bank (Player):  AN[7]=score tens  AN[6]=score ones  AN[5]=blank  AN[4]=lives
+    //   Right bank (Rival):  AN[3]=score tens  AN[2]=score ones  AN[1]=blank  AN[0]=lives
     reg [3:0] digit_val;
     reg       digit_blank;
 
@@ -34,11 +40,14 @@ module seven_seg_driver (
         digit_blank = 1'b0;
         digit_val   = 4'd0;
         case (digit_sel)
-            3'd0: digit_val = {2'b00, r_lives};
-            3'd1: digit_val = r_length;
-            3'd2: digit_val = {2'b00, p_lives};
-            3'd3: digit_val = p_length;
-            default: digit_blank = 1'b1;
+            3'd0: digit_val = {2'b00, r_lives};     // AN[0]: Rival lives
+            3'd1: digit_blank = 1'b1;                // AN[1]: Blank separator
+            3'd2: digit_val = r_score;               // AN[2]: Rival score ones
+            3'd3: digit_val = 4'd0;                  // AN[3]: Rival score tens
+            3'd4: digit_val = {2'b00, p_lives};      // AN[4]: Player lives
+            3'd5: digit_blank = 1'b1;                // AN[5]: Blank separator
+            3'd6: digit_val = p_score;               // AN[6]: Player score ones
+            3'd7: digit_val = 4'd0;                  // AN[7]: Player score tens
         endcase
     end
 

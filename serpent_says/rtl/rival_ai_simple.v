@@ -42,12 +42,8 @@ module rival_ai_simple #(
     output wire [1:0] rival_turn_req
 );
 
-    // Obstacle positions (duplicated from game core -- static constants)
-    localparam [5:0] OBS0_X = 6'd20, OBS0_Y = 6'd8;
-    localparam [5:0] OBS1_X = 6'd20, OBS1_Y = 6'd9;
-    localparam [5:0] OBS2_X = 6'd20, OBS2_Y = 6'd10;
-    localparam [5:0] OBS3_X = 6'd21, OBS3_Y = 6'd10;
-    localparam [5:0] OBS4_X = 6'd22, OBS4_Y = 6'd10;
+    // Obstacles (shared definition)
+    `include "arena_map.vh"
 
     // Three candidate directions
     wire [1:0] dir_fwd   = r_direction;
@@ -88,15 +84,7 @@ module rival_ai_simple #(
         is_wall = (tx > ARENA_X_MAX) || (ty > ARENA_Y_MAX);
     endfunction
 
-    // Obstacle check
-    function is_obstacle;
-        input [5:0] tx, ty;
-        is_obstacle = (tx == OBS0_X && ty == OBS0_Y) ||
-                      (tx == OBS1_X && ty == OBS1_Y) ||
-                      (tx == OBS2_X && ty == OBS2_Y) ||
-                      (tx == OBS3_X && ty == OBS3_Y) ||
-                      (tx == OBS4_X && ty == OBS4_Y);
-    endfunction
+    // obstacle_at() provided by arena_map.vh
 
     // Rival self-body check
     function is_own_body;
@@ -127,7 +115,7 @@ module rival_ai_simple #(
 
     function is_unsafe;
         input [5:0] tx, ty;
-        is_unsafe = is_wall(tx, ty) || is_obstacle(tx, ty) ||
+        is_unsafe = is_wall(tx, ty) || obstacle_at(tx, ty) ||
                     is_own_body(tx, ty) || is_player(tx, ty);
     endfunction
 

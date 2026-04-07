@@ -34,6 +34,9 @@ module tb_pixel_renderer_priority;
     reg        info_active;
     reg  [11:0] info_rgb;
 
+    // Temperature state
+    reg  [1:0] temp_state;
+
     // Fake sprite data
     reg  [11:0] p_head_sprite_data;
     wire [7:0]  p_head_sprite_addr;
@@ -87,6 +90,7 @@ module tb_pixel_renderer_priority;
         .victory_sprite_addr(victory_sprite_addr),
         .gameover_sprite_data(gameover_sprite_data),
         .gameover_sprite_addr(gameover_sprite_addr),
+        .temp_state(temp_state),
         .vga_r(vga_r), .vga_g(vga_g), .vga_b(vga_b)
     );
 
@@ -139,6 +143,7 @@ module tb_pixel_renderer_priority;
             fsm_state = 3'd1; // PLAYING
             info_active = 1'b0;
             info_rgb = 12'h000;
+            temp_state = 2'b01; // NEUTRAL
 
             // Default sprite data: all opaque
             p_head_sprite_data = 12'hF00;
@@ -185,18 +190,18 @@ module tb_pixel_renderer_priority;
         check_rgb(4'hF, 4'h0, 4'h0, "T3:p_head_opaque");
 
         // -----------------------------------------------
-        // T4: Player head sprite with transparency -> fallthrough to bg
+        // T4: Player head sprite transparency -> fallthrough to NEUTRAL bg
         // -----------------------------------------------
         p_head_sprite_data = 12'h000; // transparent
-        check_rgb(4'h1, 4'h1, 4'h1, "T4:p_head_transparent");
+        check_rgb(4'h1, 4'h3, 4'h1, "T4:p_head_transparent");
         p_head_sprite_data = 12'hF00; // restore
 
         // -----------------------------------------------
-        // T5: Player body -> solid green
+        // T5: Player body -> solid blue (P_BODY_COLOR = 12'h57F)
         // -----------------------------------------------
         // Body0 at tile (1,2). Pixel: x=16..31, y=138..153
         pixel_x = 10'd20; pixel_y = 10'd140;
-        check_rgb(4'h0, 4'hD, 4'h0, "T5:p_body");
+        check_rgb(4'h5, 4'h7, 4'hF, "T5:p_body");
 
         // -----------------------------------------------
         // T6: Food sprite (opaque)
@@ -206,18 +211,18 @@ module tb_pixel_renderer_priority;
         check_rgb(4'hF, 4'hF, 4'h0, "T6:food");
 
         // -----------------------------------------------
-        // T7: Obstacle sprite
+        // T7: Obstacle sprite (new map: obstacle at (12,6))
         // -----------------------------------------------
-        // Obstacle at (20,8): x=320..335, y=106+128=234..249
-        pixel_x = 10'd325; pixel_y = 10'd238;
+        // Obstacle at tile (12,6): x=192..207, y=106+96=202..217
+        pixel_x = 10'd195; pixel_y = 10'd205;
         obstacle_sprite_data = 12'hF0F;
         check_rgb(4'hF, 4'h0, 4'hF, "T7:obstacle");
 
         // -----------------------------------------------
-        // T8: Playfield background (empty tile)
+        // T8: Playfield background (empty tile, NEUTRAL temp)
         // -----------------------------------------------
         pixel_x = 10'd400; pixel_y = 10'd300;  // some empty tile
-        check_rgb(4'h1, 4'h1, 4'h1, "T8:pf_bg");
+        check_rgb(4'h1, 4'h3, 4'h1, "T8:pf_bg_neutral");
 
         // -----------------------------------------------
         // T9: Border
@@ -233,9 +238,9 @@ module tb_pixel_renderer_priority;
         pixel_x = 10'd200; pixel_y = 10'd280;  // within banner region
         check_rgb(4'hF, 4'h2, 4'h2, "T10:gameover_banner");
 
-        // T10b: GameOver banner transparent pixel -> fallthrough
+        // T10b: GameOver banner transparent pixel -> fallthrough to bg
         gameover_sprite_data = 12'h000;
-        check_rgb(4'h1, 4'h1, 4'h1, "T10b:banner_transparent");
+        check_rgb(4'h1, 4'h3, 4'h1, "T10b:banner_transparent");
 
         // -----------------------------------------------
         // T11: Lower background
@@ -243,6 +248,19 @@ module tb_pixel_renderer_priority;
         fsm_state = 3'd1;
         pixel_x = 10'd100; pixel_y = 10'd102;  // between info bar and playfield
         check_rgb(4'h0, 4'h0, 4'h2, "T11:lower_bg");
+
+        // -----------------------------------------------
+        // T12: Temperature background variants
+        // -----------------------------------------------
+        pixel_x = 10'd400; pixel_y = 10'd300;  // empty playfield tile
+
+        temp_state = 2'b00; // COOL
+        check_rgb(4'h1, 4'h2, 4'h4, "T12a:pf_bg_cool");
+
+        temp_state = 2'b10; // HOT
+        check_rgb(4'h3, 4'h1, 4'h1, "T12b:pf_bg_hot");
+
+        temp_state = 2'b01; // restore NEUTRAL
 
         // -----------------------------------------------
         // Summary

@@ -67,6 +67,9 @@ module pixel_renderer #(
     input  wire [11:0] gameover_sprite_data,
     output wire [13:0] gameover_sprite_addr,
 
+    // Temperature background state
+    input  wire [1:0]  temp_state,     // 00=COOL, 01=NEUTRAL, 10=HOT
+
     // Final output
     output wire [3:0]  vga_r,
     output wire [3:0]  vga_g,
@@ -74,23 +77,26 @@ module pixel_renderer #(
 );
 
     // --- Colour theme (editable) ---
-    localparam [11:0] P_BODY_COLOR  = 12'h46C;  // player body blue (matching head)
-    localparam [11:0] R_BODY_COLOR  = 12'hC33;  // rival body red (matching head)
-    localparam [11:0] BORDER_COLOR  = 12'hFFF;  // white
-    localparam [11:0] PF_BG_COLOR   = 12'h111;  // dark grey
-    localparam [11:0] LOWER_BG      = 12'h002;  // dark blue
-    localparam [11:0] BLACK         = 12'h000;
+    localparam [11:0] P_BODY_COLOR   = 12'h57F;  // player body blue (matching head)
+    localparam [11:0] R_BODY_COLOR   = 12'hF00;  // rival body red (matching head)
+    localparam [11:0] BORDER_COLOR   = 12'hFFF;  // white
+    localparam [11:0] PF_BG_COOL     = 12'h124;  // playfield bg: cool (blue-ish)
+    localparam [11:0] PF_BG_NEUTRAL  = 12'h131;  // playfield bg: neutral (green-ish)
+    localparam [11:0] PF_BG_HOT      = 12'h311;  // playfield bg: hot (red-ish)
+    localparam [11:0] LOWER_BG       = 12'h002;  // dark blue
+    localparam [11:0] BLACK          = 12'h000;
 
     // FSM states
     localparam VICTORY   = 3'd3;
     localparam GAME_OVER = 3'd4;
 
-    // --- Obstacle positions (duplicated) ---
-    localparam [5:0] OBS0_X = 6'd20, OBS0_Y = 6'd8;
-    localparam [5:0] OBS1_X = 6'd20, OBS1_Y = 6'd9;
-    localparam [5:0] OBS2_X = 6'd20, OBS2_Y = 6'd10;
-    localparam [5:0] OBS3_X = 6'd21, OBS3_Y = 6'd10;
-    localparam [5:0] OBS4_X = 6'd22, OBS4_Y = 6'd10;
+    // --- Obstacles (shared definition) ---
+    `include "arena_map.vh"
+
+    // --- Temperature-controlled playfield background ---
+    wire [11:0] pf_bg_color = (temp_state == 2'b00) ? PF_BG_COOL    :
+                              (temp_state == 2'b10) ? PF_BG_HOT     :
+                                                      PF_BG_NEUTRAL;
 
     // --- Region computation ---
     wire in_playfield = video_active &&
@@ -142,13 +148,8 @@ module pixel_renderer #(
     // Food
     wire hit_food = in_playfield && (tile_x == food_x) && (tile_y == food_y);
 
-    // Obstacles
-    wire hit_obs = in_playfield && (
-        (tile_x == OBS0_X && tile_y == OBS0_Y) ||
-        (tile_x == OBS1_X && tile_y == OBS1_Y) ||
-        (tile_x == OBS2_X && tile_y == OBS2_Y) ||
-        (tile_x == OBS3_X && tile_y == OBS3_Y) ||
-        (tile_x == OBS4_X && tile_y == OBS4_Y));
+    // Obstacles (shared definition from arena_map.vh)
+    wire hit_obs = in_playfield && obstacle_at(tile_x, tile_y);
 
     // --- Sprite ROM address assignment ---
     assign p_head_sprite_addr   = tile_sprite_addr;
@@ -215,7 +216,7 @@ module pixel_renderer #(
         end else if (hit_obs && obstacle_sprite_data != 12'h000) begin
             pixel_rgb = obstacle_sprite_data;
         end else if (in_playfield) begin
-            pixel_rgb = PF_BG_COLOR;
+            pixel_rgb = pf_bg_color;
         end else if (in_lower_bg) begin
             pixel_rgb = LOWER_BG;
         end else begin

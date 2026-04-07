@@ -224,44 +224,62 @@ module tb_snake_game_core;
         check_val(p_direction, 2'b01, "S4f:respawn_dir");
 
         // -----------------------------------------------
-        // Scenario 5: Food collection
+        // Scenario 5: Food collection (FC0 at (14,10))
         // -----------------------------------------------
         $display("\n--- Scenario 5: Food collection ---");
-        // Food starts at (12,10). Player at (5,5) dir=right.
-        // Move right 7 ticks to reach x=12
-        pulse_tick; // x=6
-        pulse_tick; // x=7
-        pulse_tick; // x=8
-        pulse_tick; // x=9
-        pulse_tick; // x=10
-        pulse_tick; // x=11
-        // Now turn down toward food at y=10
-        send_turn(2'b10);  // right relative: right(01)+1 = down(10)
-        pulse_tick; // apply turn, move to (12,5)... wait, let me recalculate.
-        // After respawn: head=(5,5) dir=right.
-        // After 6 ticks right: head=(11,5). Then send right-turn to go down.
-        // tick with turn applied: direction becomes 01+1=10(down), head=(11,6)? No...
-        // Actually direction 01(right) + right_turn(+1) = 10(down).
-        // But the turn was latched before the tick: next_p_dir = p_direction + 1 = 10(down)
-        // So head moves down from (11,5) to (11,6)
+        // Player at (5,5) dir=right after S4 respawn. Obstacles at x=16..20,y=5 (Seg4).
+        // Navigate: right 1 tick, turn down, go to y=10, turn right, go to x=14 for food.
+        pulse_tick; // x=6, y=5
+        // Turn right-relative (right+1=down)
+        send_turn(2'b10);
+        pulse_tick; // dir=down, head at (6,6)
         check_val(p_direction, 2'b10, "S5a:turned_down");
-
-        // Continue down toward y=10: y=6->7->8->9->10
-        pulse_tick; // y=7
-        pulse_tick; // y=8
-        pulse_tick; // y=9
-        // Now turn right (which from down is left: 10+1=11=left).
-        // Actually we want to go right to hit food at (12,10).
-        // Current: head at (11,9), dir=down. Need to go to (12,10).
-        // Turn left from down: down - 1 = right(01). That's a left-relative turn.
-        // No wait. From dir=10(down), a left-relative turn (pending_turn=01) means dir = 10 - 1 = 01 = right.
-        // So send left turn to go right.
-        // Actually let me just let it go down one more to (11,10), then turn right.
-        pulse_tick; // head now at (11,10)
-        // Send left turn to go right: 10(down) - 1 = 01(right)
+        pulse_tick; // (6,7)
+        pulse_tick; // (6,8)
+        pulse_tick; // (6,9)
+        pulse_tick; // (6,10)
+        // Turn left-relative from down (down-1=right)
         send_turn(2'b01);
-        pulse_tick; // head at (12,10) - should eat food!
-        check_val(p_head_x, 6'd12, "S5b:ate_hx");
+        pulse_tick; // dir=right, head at (7,10)
+        pulse_tick; // (8,10)
+        pulse_tick; // (9,10)
+        pulse_tick; // (10,10)
+        pulse_tick; // (11,10)
+        pulse_tick; // (12,10) -- obstacle at (12,10)! Seg1 ends here.
+        // Wait -- (12,10) IS an obstacle in the new map (Seg1: x=12, y=6..10).
+        // Player will collide with obstacle at (12,10) and lose a life!
+        // This is actually correct: the player hits obstacle, loses life 2->1, respawns.
+        check_val(p_lives, 2'd1, "S5a2:obs_collision");
+        check_val(p_head_x, 6'd5, "S5a3:respawn_hx");
+        check_val(p_head_y, 6'd5, "S5a4:respawn_hy");
+
+        // Try again: navigate below Seg1 (which is at x=12, y=6..10).
+        // Go right to x=10, turn down to y=11 (below Seg1), turn right past x=12, continue to (14,10).
+        // Actually, go right 5 ticks to x=10, turn down to y=11, turn right to x=14, turn up to y=10.
+        // From (5,5) dir=right:
+        pulse_tick; // (6,5)
+        pulse_tick; // (7,5)
+        pulse_tick; // (8,5)
+        pulse_tick; // (9,5)
+        pulse_tick; // (10,5)
+        // Turn down
+        send_turn(2'b10); // right+1=down
+        pulse_tick; // (10,6)
+        pulse_tick; // (10,7)
+        pulse_tick; // (10,8)
+        pulse_tick; // (10,9)
+        pulse_tick; // (10,10)
+        pulse_tick; // (10,11)
+        // Turn right
+        send_turn(2'b01); // down-1=right
+        pulse_tick; // (11,11)
+        pulse_tick; // (12,11)
+        pulse_tick; // (13,11)
+        pulse_tick; // (14,11)
+        // Turn up
+        send_turn(2'b01); // right-1=up
+        pulse_tick; // (14,10) -- food! FC0 at (14,10)
+        check_val(p_head_x, 6'd14, "S5b:ate_hx");
         check_val(p_head_y, 6'd10, "S5c:ate_hy");
         check_val(p_length, 4'd3, "S5d:grew");
 
@@ -269,15 +287,12 @@ module tb_snake_game_core;
         // Scenario 6: Restart from terminal
         // -----------------------------------------------
         $display("\n--- Scenario 6: Restart ---");
-        // Force many wall collisions to kill player
-        // Head at (12,10) dir=right. Move right to wall.
-        // x=12 to x=39 = 27 ticks, then wall collision at x=39
-        repeat(27) pulse_tick; // reach x=39
-        pulse_tick; // wall collision, lives 2->1
-        check_val(p_lives, 2'd1, "S6a:lives_1");
-
-        // Move right to wall again (from respawn at x=5, need 34 ticks to x=39)
-        repeat(34) pulse_tick;
+        // Player at (14,10) dir=up, lives=1. y=10 row clear to right (Seg2 at y=11).
+        // Turn right-relative from up (up+1=right), then go to wall.
+        send_turn(2'b10); // up+1=right
+        pulse_tick; // (15,10) dir=right
+        // x=15 to x=39 = 24 ticks
+        repeat(24) pulse_tick; // reach x=39
         pulse_tick; // wall collision, lives 1->0 -> GAME_OVER
         check_val(p_lives, 2'd0, "S6b:lives_0");
         check_val(fsm_state, 3'd4, "S6c:GAME_OVER");

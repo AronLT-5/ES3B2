@@ -110,6 +110,16 @@ module top_serpent_says #(
         .start_btn (start_btn)
     );
 
+    // --- Temperature background controller ---
+    wire [1:0] temp_state;
+
+    temp_background_ctrl u_temp_ctrl (
+        .clk              (clk_25mhz),
+        .reset_n          (CPU_RESETN),
+        .capture_baseline (start_btn),
+        .temp_state       (temp_state)
+    );
+
     // --- Turn request mux ---
     wire [1:0] player_turn_req;
     wire       player_turn_valid;
@@ -339,6 +349,7 @@ module top_serpent_says #(
         .victory_sprite_addr(victory_sprite_addr),
         .gameover_sprite_data(gameover_sprite_data),
         .gameover_sprite_addr(gameover_sprite_addr),
+        .temp_state(temp_state),
         .vga_r(VGA_R), .vga_g(VGA_G), .vga_b(VGA_B)
     );
 
