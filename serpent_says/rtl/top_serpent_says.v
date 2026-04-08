@@ -31,14 +31,17 @@ module top_serpent_says #(
     output wire [7:0]  AN
 );
 
-    // --- Voice stubs ---
-    wire [1:0] voice_turn_req  = 2'b00;
-    wire       voice_turn_valid = 1'b0;
-    assign pdm_clk_o   = 1'b0;
-    assign pdm_lrsel_o  = 1'b0;
+    // --- ML speech pipeline ---
+    wire [1:0] voice_turn_req;
+    wire       voice_turn_valid;
+    wire [1:0] voice_kws_class;
+    wire [7:0] voice_kws_conf;
+    wire       voice_kws_valid;
+    wire [1:0] last_cmd;
+    wire [7:0] last_cmd_conf;
+    wire       ml_alive;
 
-    // Unused input
-    wire _pdm_unused = pdm_data_i;
+    assign pdm_lrsel_o = 1'b0;  // Nexys 4 DDR mic expects LRSEL low
 
     // --- Switch synchroniser ---
     reg [2:0] sw_s1, sw_s2;
@@ -119,6 +122,36 @@ module top_serpent_says #(
         .capture_baseline (start_btn),
         .temp_state       (temp_state)
     );
+
+    // --- ML speech pipeline ---
+    ml_top_bnn u_ml (
+        .clk             (clk_25mhz),
+        .rst_n           (CPU_RESETN),
+        .pdm_data_i      (pdm_data_i),
+        .pdm_clk_o       (pdm_clk_o),
+        .voice_mode_en   (voice_mode_en),
+        .voice_turn_req  (voice_turn_req),
+        .voice_turn_valid(voice_turn_valid),
+        .voice_kws_class (voice_kws_class),
+        .voice_kws_conf  (voice_kws_conf),
+        .voice_kws_valid (voice_kws_valid),
+        .last_cmd        (last_cmd),
+        .last_cmd_conf   (last_cmd_conf),
+        .ml_alive        (ml_alive)
+    );
+
+    // Stretched voice-activity indicator (~0.25s hold after accepted voice turn)
+    reg [22:0] voice_active_cnt;
+    wire       voice_active = (voice_active_cnt != 0);
+
+    always @(posedge clk_25mhz or negedge CPU_RESETN) begin
+        if (!CPU_RESETN)
+            voice_active_cnt <= 23'd0;
+        else if (voice_turn_valid)
+            voice_active_cnt <= 23'd6_250_000;  // 0.25s at 25 MHz
+        else if (voice_active_cnt != 0)
+            voice_active_cnt <= voice_active_cnt - 1;
+    end
 
     // --- Turn request mux ---
     wire [1:0] player_turn_req;
@@ -387,6 +420,7 @@ module top_serpent_says #(
         .dbg_r_collision(dbg_r_collision),
         .dbg_p_ate(dbg_p_ate),
         .dbg_r_ate(dbg_r_ate),
+        .voice_active(voice_active),
         .led(LED)
     );
 

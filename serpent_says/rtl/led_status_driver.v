@@ -14,6 +14,7 @@ module led_status_driver (
     input  wire        dbg_r_collision,
     input  wire        dbg_p_ate,
     input  wire        dbg_r_ate,
+    input  wire        voice_active,      // stretched ~0.25s pulse on accepted voice turn
     output wire [12:0] led
 );
 
@@ -37,8 +38,9 @@ module led_status_driver (
     wire is_terminal = (fsm_state == VICTORY) || (fsm_state == GAME_OVER);
 
     wire [12:0] normal_led = {
-        4'b0000,              // LED[12:9]
-        voice_ready,          // LED[8]
+        3'b000,               // LED[12:10]
+        voice_active,         // LED[9]  accepted voice command indicator
+        voice_ready,          // LED[8]  voice mode enabled (SW[2])
         is_terminal,          // LED[7]
         is_paused,            // LED[6]
         r_lives_bmp,          // LED[5:3]
