@@ -7,8 +7,9 @@
 // is available for MLP inference.
 //
 // Memory layout: frame[0..15][mel_bin 0..15] stored in a 256-entry BRAM.
-//   Address = frame_idx * 16 + mel_bin
-//   frame_idx 0 = oldest, frame_idx 15 = newest
+//   Storage address = frame_idx * 16 + mel_bin
+//   Read address (feat_addr) uses mel-major order to match Python:
+//     feat_addr[7:4] = mel_bin, feat_addr[3:0] = frame (oldest=0, newest=15)
 // ============================================================================
 
 module context_buffer #(
@@ -37,10 +38,13 @@ module context_buffer #(
     reg [4:0] frame_count;         // Saturates at 16
 
     // ── Read port: map feature address through circular offset ──
-    // The oldest frame starts at (write_frame_idx * N_MELS) in circular order.
-    // feat_addr 0..15 = oldest frame, feat_addr 240..255 = newest frame.
-    // Physical address = ((write_frame_idx * 16) + feat_addr) % 256
-    wire [7:0] phys_addr = {write_frame_idx, 4'd0} + feat_addr;
+    // Python flattens as mel-major: feature[k] = mel_bin[k/16], frame[k%16]
+    // So feat_addr upper 4 bits = mel_bin, lower 4 bits = frame index.
+    // Physical storage is frame*16+mel, so we swap the nibbles:
+    //   phys_addr = (write_frame_idx + frame) * 16 + mel_bin
+    wire [3:0] out_mel = feat_addr[7:4];   // mel bin  (outer dimension in Python)
+    wire [3:0] out_frm = feat_addr[3:0];   // frame    (inner dimension in Python)
+    wire [7:0] phys_addr = {(write_frame_idx + out_frm), out_mel};
     assign feat_out = buf_mem[phys_addr];
 
     // ── Write port: new mel values go into write_frame_idx slot ──

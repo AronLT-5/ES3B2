@@ -1,15 +1,14 @@
 // ============================================================================
-// Feature Normalizer + Int8 Quantizer
+// Feature Normalizer + Int8 Quantizer (with per-window max subtraction)
 // ============================================================================
-// Combines per-feature normalization and int8 quantization into one step:
-//   int8_out = clamp(round(feature * scale + offset), -127, 127)
+// Two-pass normalization:
+//   Pass 1: Scan all 256 features to find the maximum value
+//   Pass 2: For each feature: int8 = clamp(round((feature - max) * scale + offset), -127, 127)
 //
-// The scale and offset values are pre-computed in Python to combine:
-//   normalized = (feature - mean) / std
-//   int8 = round(normalized / input_scale * 127)
+// The max subtraction makes hardware features relative (all <= 0),
+// matching Python's librosa.power_to_db(mel, ref=np.max) convention.
 //
-// Into a single: scale = 127 / (std * input_scale)
-//                offset = -mean * scale
+// scale and offset are pre-computed from training statistics in log2 space.
 //
 // Requires: norm_scale.mem, norm_offset.mem (256 entries each, signed hex16)
 // ============================================================================
@@ -35,8 +34,6 @@ module normalizer #(
 );
 
     // ── Normalization coefficient ROMs ──
-    // scale: Q8.8 signed fixed-point
-    // offset: Q8.8 signed fixed-point
     reg signed [15:0] scale_rom  [0:N_FEATURES-1];
     reg signed [15:0] offset_rom [0:N_FEATURES-1];
     initial begin
@@ -45,25 +42,34 @@ module normalizer #(
     end
 
     // ── FSM ──
-    localparam S_IDLE = 2'd0;
-    localparam S_READ = 2'd1;  // Set address, wait for data
-    localparam S_CALC = 2'd2;  // Multiply + clamp
-    localparam S_DONE = 2'd3;
+    localparam S_IDLE     = 3'd0;
+    localparam S_MAX_READ = 3'd1;  // Pass 1: read features to find max
+    localparam S_MAX_CMP  = 3'd2;  // Pass 1: compare and update max
+    localparam S_NORM_RD  = 3'd3;  // Pass 2: read feature for normalization
+    localparam S_NORM_CAL = 3'd4;  // Pass 2: compute normalized int8
+    localparam S_DONE     = 3'd5;
 
-    reg [1:0] state;
+    reg [2:0] state;
     reg [8:0] feat_idx;
 
-    // Registered inputs
+    // Pass 1: max tracking
+    reg signed [15:0] feat_max;
+
+    // Pass 2: registered inputs
     reg signed [15:0] feat_reg;
     reg signed [15:0] s_reg, o_reg;
 
-    // Multiply: feature * scale (16 × 16 = 32 bits, Q8.8 × Q8.8 = Q16.16)
-    wire signed [31:0] product = feat_reg * s_reg;
-    // Extract integer part after adding offset (also Q8.8)
-    // product is Q16.16, round >>8 to get Q16.8, add offset (Q8.8), round >>8
-    wire signed [23:0] scaled = (product + 32'sd128) >>> 8; // Q16.8 with rounding
-    wire signed [23:0] with_offset = scaled + {{8{o_reg[15]}}, o_reg}; // sign-extend offset
-    wire signed [15:0] result = (with_offset + 24'sd128) >>> 8; // Q16.0 with rounding
+    // Subtract max: (feature - feat_max) makes all values <= 0
+    wire signed [15:0] feat_relative = feat_reg - feat_max;
+
+    // Multiply: (feature - max) * scale  (Q8.8 × Q8.8 = Q16.16)
+    wire signed [31:0] product = feat_relative * s_reg;
+    // Round Q16.16 to Q16.8
+    wire signed [23:0] scaled = (product + 32'sd128) >>> 8;
+    // Add offset (Q8.8, sign-extended to Q16.8)
+    wire signed [23:0] with_offset = scaled + {{8{o_reg[15]}}, o_reg};
+    // Round Q16.8 to integer
+    wire signed [15:0] result = (with_offset + 24'sd128) >>> 8;
 
     // Clamp to [-127, 127]
     wire signed [7:0] clamped = (result > 16'sd127) ? 8'sd127 :
@@ -81,6 +87,7 @@ module normalizer #(
             int8_addr    <= 0;
             int8_we      <= 1'b0;
             feat_reg     <= 0;
+            feat_max     <= -16'sd32768;
             s_reg        <= 0;
             o_reg        <= 0;
         end else begin
@@ -90,23 +97,44 @@ module normalizer #(
             case (state)
                 S_IDLE: begin
                     if (start) begin
-                        state        <= S_READ;
+                        state        <= S_MAX_READ;
                         feat_idx     <= 0;
                         feature_addr <= 0;
+                        feat_max     <= -16'sd32768;  // reset max
                         busy         <= 1'b1;
                     end
                 end
 
-                S_READ: begin
-                    // Register feature data and coefficients
+                // ── Pass 1: Find maximum feature value ──
+                S_MAX_READ: begin
+                    feat_reg <= feature_in;
+                    state    <= S_MAX_CMP;
+                end
+
+                S_MAX_CMP: begin
+                    if (feat_reg > feat_max)
+                        feat_max <= feat_reg;
+
+                    if (feat_idx == N_FEATURES - 1) begin
+                        feat_idx     <= 0;
+                        feature_addr <= 0;
+                        state        <= S_NORM_RD;
+                    end else begin
+                        feat_idx     <= feat_idx + 1;
+                        feature_addr <= feat_idx[7:0] + 1;
+                        state        <= S_MAX_READ;
+                    end
+                end
+
+                // ── Pass 2: Normalize with max subtraction ──
+                S_NORM_RD: begin
                     feat_reg <= feature_in;
                     s_reg    <= scale_rom[feat_idx[7:0]];
                     o_reg    <= offset_rom[feat_idx[7:0]];
-                    state    <= S_CALC;
+                    state    <= S_NORM_CAL;
                 end
 
-                S_CALC: begin
-                    // Output clamped int8 value
+                S_NORM_CAL: begin
                     int8_out  <= clamped;
                     int8_addr <= feat_idx[7:0];
                     int8_we   <= 1'b1;
@@ -116,7 +144,7 @@ module normalizer #(
                     end else begin
                         feat_idx     <= feat_idx + 1;
                         feature_addr <= feat_idx[7:0] + 1;
-                        state        <= S_READ;
+                        state        <= S_NORM_RD;
                     end
                 end
 
