@@ -1,16 +1,17 @@
 // ============================================================================
-// Command Filter
+// Command Filter (with K-of-N temporal voting)
 // ============================================================================
 // Post-processes KWS inference output to produce gameplay-safe turn requests.
 //
 // Filtering:
 //   1. Confidence threshold: reject classifications below CONF_THRESH
 //   2. Class filter: only left/right generate turns (other/silence -> no turn)
-//   3. Cooldown: suppress repeated detections for COOLDOWN_TICKS after a turn
+//   3. K-of-N voting: require VOTE_K out of last VOTE_N classifications to
+//      agree on the same direction before accepting (suppresses single-frame
+//      spikes from noise or ambiguous speech)
+//   4. Cooldown: suppress repeated detections for COOLDOWN_TICKS after a turn
 //
 // Repeated same-direction turns ARE allowed after cooldown expires.
-// This is required for Snake gameplay where left-left or right-right
-// sequences are valid and common.
 //
 // Output signals match the Serpent Says interface contract:
 //   voice_kws_class[1:0]  - 00=other/silence, 01=left, 10=right
@@ -21,8 +22,10 @@
 // ============================================================================
 
 module command_filter #(
-    parameter CONF_THRESH    = 8'sd40,   // Minimum confidence (int8 logit threshold)
-    parameter COOLDOWN_TICKS = 24'd500_000  // ~20 ms at 25 MHz (adjustable)
+    parameter CONF_THRESH    = 8'sd2,    // Minimum confidence (int8 logit threshold)
+    parameter COOLDOWN_TICKS = 24'd12_500_000,  // 500ms at 25 MHz
+    parameter VOTE_N         = 3,        // Voting window size
+    parameter VOTE_K         = 2         // Required agreeing votes
 )(
     input  wire        clk,
     input  wire        rst_n,
@@ -51,6 +54,23 @@ module command_filter #(
     // ML alive toggle
     reg ml_toggle;
 
+    // ── Voting history: store last VOTE_N classifications ──
+    // Each entry: 2-bit class (0=left, 1=right, 2=other, 3=unused)
+    reg [1:0] vote_history [0:VOTE_N-1];
+    integer vi;
+
+    // Count votes for each class in the history window
+    reg [3:0] left_votes, right_votes;
+    integer ci;
+    always @(*) begin
+        left_votes  = 0;
+        right_votes = 0;
+        for (ci = 0; ci < VOTE_N; ci = ci + 1) begin
+            if (vote_history[ci] == 2'd0) left_votes  = left_votes + 1;
+            if (vote_history[ci] == 2'd1) right_votes = right_votes + 1;
+        end
+    end
+
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             voice_kws_class <= 2'd0;
@@ -63,6 +83,8 @@ module command_filter #(
             ml_alive        <= 1'b0;
             ml_toggle       <= 1'b0;
             cooldown_cnt    <= 0;
+            for (vi = 0; vi < VOTE_N; vi = vi + 1)
+                vote_history[vi] <= 2'd2;  // Initialize to "other"
         end else begin
             // Default: clear strobes
             voice_kws_valid  <= 1'b0;
@@ -74,8 +96,6 @@ module command_filter #(
 
             if (kws_valid_i) begin
                 // Map internal class encoding to interface encoding
-                // Internal: 0=left, 1=right, 2=other
-                // Interface: 00=other/silence, 01=left, 10=right
                 case (kws_class_i)
                     2'd0: voice_kws_class <= 2'b01; // left
                     2'd1: voice_kws_class <= 2'b10; // right
@@ -88,22 +108,38 @@ module command_filter #(
                 ml_toggle <= ~ml_toggle;
                 ml_alive  <= ~ml_toggle;
 
-                // Generate filtered turn request
+                // Shift voting history and insert new classification
+                for (vi = VOTE_N-1; vi > 0; vi = vi - 1)
+                    vote_history[vi] <= vote_history[vi-1];
+
+                // Only count confident classifications in voting
+                if (kws_conf_i >= CONF_THRESH)
+                    vote_history[0] <= kws_class_i;
+                else
+                    vote_history[0] <= 2'd2;  // Treat low-confidence as "other"
+
+                // Generate filtered turn request using K-of-N voting
                 if (voice_mode_en && !cooldown_active) begin
-                    if (kws_class_i == 2'd0 && kws_conf_i >= CONF_THRESH) begin
-                        // Left turn
+                    if (left_votes >= VOTE_K && kws_class_i == 2'd0 && kws_conf_i >= CONF_THRESH) begin
+                        // Left turn — voted and current agrees
                         voice_turn_req   <= 2'b01;
                         voice_turn_valid <= 1'b1;
                         cooldown_cnt     <= COOLDOWN_TICKS;
                         last_cmd         <= 2'b01;
                         last_cmd_conf    <= kws_conf_i;
-                    end else if (kws_class_i == 2'd1 && kws_conf_i >= CONF_THRESH) begin
-                        // Right turn
+                        // Clear history after accepted turn
+                        for (vi = 0; vi < VOTE_N; vi = vi + 1)
+                            vote_history[vi] <= 2'd2;
+                    end else if (right_votes >= VOTE_K && kws_class_i == 2'd1 && kws_conf_i >= CONF_THRESH) begin
+                        // Right turn — voted and current agrees
                         voice_turn_req   <= 2'b10;
                         voice_turn_valid <= 1'b1;
                         cooldown_cnt     <= COOLDOWN_TICKS;
                         last_cmd         <= 2'b10;
                         last_cmd_conf    <= kws_conf_i;
+                        // Clear history after accepted turn
+                        for (vi = 0; vi < VOTE_N; vi = vi + 1)
+                            vote_history[vi] <= 2'd2;
                     end
                 end
             end
