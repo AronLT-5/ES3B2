@@ -24,8 +24,8 @@ module ml_top_bnn #(
     parameter CLK_FREQ       = 25_000_000,
     parameter PDM_CLK_DIV    = 10,
     parameter CIC_DECIM      = 156,
-    parameter CONF_THRESH    = 8'sd40,
-    parameter COOLDOWN_TICKS = 24'd500_000
+    parameter CONF_THRESH    = 8'sd2,
+    parameter COOLDOWN_TICKS = 24'd12_500_000  // 500ms at 25 MHz
 )(
     input  wire        clk,
     input  wire        rst_n,
