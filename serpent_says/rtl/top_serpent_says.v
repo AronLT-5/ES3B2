@@ -124,7 +124,7 @@ module top_serpent_says #(
     );
 
     // --- ML speech pipeline ---
-    ml_top_bnn u_ml (
+    ml_top_cnn u_ml (
         .clk             (clk_25mhz),
         .rst_n           (CPU_RESETN),
         .pdm_data_i      (pdm_data_i),
