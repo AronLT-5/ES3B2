@@ -76,6 +76,11 @@ module snake_game_core #(
     output reg  [1:0] last_turn_source,
     output reg  [1:0] last_player_cmd,
 
+    // Animation
+    output wire       anim_p_dying,     // Player is in death animation
+    output wire       anim_r_dying,     // Rival is in death animation
+    output wire       anim_food_eaten,  // Food was just eaten (1-tick pulse)
+
     // Debug
     output wire       dbg_p_turn_accepted,
     output wire       dbg_r_dir_changed,
@@ -86,11 +91,19 @@ module snake_game_core #(
 );
 
     // --- FSM state encoding ---
-    localparam IDLE      = 3'd0;
-    localparam PLAYING   = 3'd1;
-    localparam PAUSED    = 3'd2;
-    localparam VICTORY   = 3'd3;
-    localparam GAME_OVER = 3'd4;
+    localparam IDLE       = 3'd0;
+    localparam PLAYING    = 3'd1;
+    localparam PAUSED     = 3'd2;
+    localparam VICTORY    = 3'd3;
+    localparam GAME_OVER  = 3'd4;
+    localparam RESPAWNING = 3'd5;  // Death animation freeze before respawn
+
+    // Respawn animation timer (~1.5s at 25 MHz)
+    localparam RESPAWN_TICKS = 25'd37_500_000;
+    reg [24:0] respawn_timer;
+    // Which snake(s) died in this respawn cycle
+    reg        respawn_p_died;
+    reg        respawn_r_died;
 
     // --- Obstacles (shared definition) ---
     `include "arena_map.vh"
@@ -114,6 +127,10 @@ module snake_game_core #(
 
     // --- Debug regs (one-tick pulses) ---
     reg dbg_p_turn_r, dbg_r_dir_r, dbg_p_coll_r, dbg_r_coll_r, dbg_p_ate_r, dbg_r_ate_r;
+    assign anim_p_dying = (fsm_state == RESPAWNING) && respawn_p_died;
+    assign anim_r_dying = (fsm_state == RESPAWNING) && respawn_r_died;
+    assign anim_food_eaten = dbg_p_ate_r || dbg_r_ate_r;  // Reuse existing 1-tick eat pulses
+
     assign dbg_p_turn_accepted = dbg_p_turn_r;
     assign dbg_r_dir_changed   = dbg_r_dir_r;
     assign dbg_p_collision     = dbg_p_coll_r;
@@ -289,9 +306,16 @@ module snake_game_core #(
     wire head_swap = (next_p_hx == r_head_x) && (next_p_hy == r_head_y) &&
                      (next_r_hx == p_head_x) && (next_r_hy == p_head_y);
 
+    // Head-into-head: one snake moves into the other's current head tile
+    // (the vacating head becomes body0, so this IS a body collision)
+    wire p_into_r_head = (next_p_hx == r_head_x) && (next_p_hy == r_head_y);
+    wire r_into_p_head = (next_r_hx == p_head_x) && (next_r_hy == p_head_y);
+
     // Aggregate collision flags
-    wire p_collided = p_hit_wall || p_hit_obs || p_self_hit || p_hit_r_body || head_to_head || head_swap;
-    wire r_collided = r_hit_wall || r_hit_obs || r_self_hit || r_hit_p_body || head_to_head || head_swap;
+    wire p_collided = p_hit_wall || p_hit_obs || p_self_hit || p_hit_r_body ||
+                      head_to_head || head_swap || p_into_r_head;
+    wire r_collided = r_hit_wall || r_hit_obs || r_self_hit || r_hit_p_body ||
+                      head_to_head || head_swap || r_into_p_head;
 
     // Step 5: Food resolution (only non-colliding snakes eat)
     wire p_eats = p_on_food && !p_collided && !head_to_head;
@@ -400,6 +424,10 @@ module snake_game_core #(
             pending_turn <= 2'b00;
             pending_valid <= 1'b0;
             pending_source <= 2'b00;
+            // Animation
+            respawn_timer  <= 25'd0;
+            respawn_p_died <= 1'b0;
+            respawn_r_died <= 1'b0;
             // Debug
             dbg_p_turn_r <= 1'b0;  dbg_r_dir_r <= 1'b0;
             dbg_p_coll_r <= 1'b0;  dbg_r_coll_r <= 1'b0;
@@ -480,34 +508,11 @@ module snake_game_core #(
                         // --- Resolve collisions, food, lives, movement ---
                         // Player collision
                         if (p_collided) begin
-                            if (p_lives <= 2'd1) begin
+                            if (p_lives <= 2'd1)
                                 p_lives <= 2'd0;
-                            end else begin
+                            else
                                 p_lives <= p_lives - 2'd1;
-                            end
-                            // Respawn player
-                            if (p_lives > 2'd1) begin
-                                // Check primary spawn safety
-                                if (!spawn_occupied(P_INIT_HEAD_X, P_INIT_HEAD_Y, P_INIT_BODY0_X, P_INIT_BODY0_Y,
-                                        r_head_x, r_head_y,
-                                        r_body0_x, r_body0_y, r_body1_x, r_body1_y, r_body2_x, r_body2_y,
-                                        r_body3_x, r_body3_y, r_body4_x, r_body4_y, r_body5_x, r_body5_y,
-                                        r_body6_x, r_body6_y, r_length)) begin
-                                    p_head_x <= P_INIT_HEAD_X;  p_head_y <= P_INIT_HEAD_Y;
-                                    p_body0_x <= P_INIT_BODY0_X; p_body0_y <= P_INIT_BODY0_Y;
-                                end else begin
-                                    p_head_x <= P_ALT_HEAD_X;  p_head_y <= P_ALT_HEAD_Y;
-                                    p_body0_x <= P_ALT_BODY0_X; p_body0_y <= P_ALT_BODY0_Y;
-                                end
-                                p_body1_x <= 6'd0; p_body1_y <= 6'd0;
-                                p_body2_x <= 6'd0; p_body2_y <= 6'd0;
-                                p_body3_x <= 6'd0; p_body3_y <= 6'd0;
-                                p_body4_x <= 6'd0; p_body4_y <= 6'd0;
-                                p_body5_x <= 6'd0; p_body5_y <= 6'd0;
-                                p_body6_x <= 6'd0; p_body6_y <= 6'd0;
-                                p_direction <= P_INIT_DIR;
-                                p_length <= INITIAL_SNAKE_LEN;
-                            end
+                            // Don't respawn yet — RESPAWNING state handles it
                         end else begin
                             // Normal player movement
                             p_direction <= next_p_dir;
@@ -525,33 +530,11 @@ module snake_game_core #(
 
                         // Rival collision
                         if (r_collided) begin
-                            if (r_lives <= 2'd1) begin
+                            if (r_lives <= 2'd1)
                                 r_lives <= 2'd0;
-                            end else begin
+                            else
                                 r_lives <= r_lives - 2'd1;
-                            end
-                            // Respawn rival
-                            if (r_lives > 2'd1) begin
-                                if (!spawn_occupied(R_INIT_HEAD_X, R_INIT_HEAD_Y, R_INIT_BODY0_X, R_INIT_BODY0_Y,
-                                        p_head_x, p_head_y,
-                                        p_body0_x, p_body0_y, p_body1_x, p_body1_y, p_body2_x, p_body2_y,
-                                        p_body3_x, p_body3_y, p_body4_x, p_body4_y, p_body5_x, p_body5_y,
-                                        p_body6_x, p_body6_y, p_length)) begin
-                                    r_head_x <= R_INIT_HEAD_X;  r_head_y <= R_INIT_HEAD_Y;
-                                    r_body0_x <= R_INIT_BODY0_X; r_body0_y <= R_INIT_BODY0_Y;
-                                end else begin
-                                    r_head_x <= R_ALT_HEAD_X;  r_head_y <= R_ALT_HEAD_Y;
-                                    r_body0_x <= R_ALT_BODY0_X; r_body0_y <= R_ALT_BODY0_Y;
-                                end
-                                r_body1_x <= 6'd0; r_body1_y <= 6'd0;
-                                r_body2_x <= 6'd0; r_body2_y <= 6'd0;
-                                r_body3_x <= 6'd0; r_body3_y <= 6'd0;
-                                r_body4_x <= 6'd0; r_body4_y <= 6'd0;
-                                r_body5_x <= 6'd0; r_body5_y <= 6'd0;
-                                r_body6_x <= 6'd0; r_body6_y <= 6'd0;
-                                r_direction <= R_INIT_DIR;
-                                r_length <= INITIAL_SNAKE_LEN;
-                            end
+                            // Don't respawn yet — RESPAWNING state handles it
                         end else begin
                             // Normal rival movement
                             r_direction <= next_r_dir;
@@ -584,6 +567,12 @@ module snake_game_core #(
                             fsm_state <= VICTORY;
                         end else if (r_eats && (r_length + 4'd1 >= MAX_SNAKE_LEN)) begin
                             fsm_state <= GAME_OVER;
+                        end else if (p_collided || r_collided) begin
+                            // Non-terminal collision: freeze for death animation
+                            fsm_state      <= RESPAWNING;
+                            respawn_timer  <= RESPAWN_TICKS;
+                            respawn_p_died <= p_collided;
+                            respawn_r_died <= r_collided;
                         end
                     end
                 end
@@ -591,6 +580,63 @@ module snake_game_core #(
                 PAUSED: begin
                     if (!pause_sw)
                         fsm_state <= PLAYING;
+                    if (start_btn)
+                        fsm_state <= IDLE;
+                end
+
+                RESPAWNING: begin
+                    // Death animation freeze — timer counts down, then respawn
+                    if (respawn_timer > 0) begin
+                        respawn_timer <= respawn_timer - 25'd1;
+                    end else begin
+                        // Timer expired: respawn the dead snake(s) and resume
+                        if (respawn_p_died) begin
+                            if (!spawn_occupied(P_INIT_HEAD_X, P_INIT_HEAD_Y, P_INIT_BODY0_X, P_INIT_BODY0_Y,
+                                    r_head_x, r_head_y,
+                                    r_body0_x, r_body0_y, r_body1_x, r_body1_y, r_body2_x, r_body2_y,
+                                    r_body3_x, r_body3_y, r_body4_x, r_body4_y, r_body5_x, r_body5_y,
+                                    r_body6_x, r_body6_y, r_length)) begin
+                                p_head_x <= P_INIT_HEAD_X;  p_head_y <= P_INIT_HEAD_Y;
+                                p_body0_x <= P_INIT_BODY0_X; p_body0_y <= P_INIT_BODY0_Y;
+                            end else begin
+                                p_head_x <= P_ALT_HEAD_X;  p_head_y <= P_ALT_HEAD_Y;
+                                p_body0_x <= P_ALT_BODY0_X; p_body0_y <= P_ALT_BODY0_Y;
+                            end
+                            p_body1_x <= 6'd0; p_body1_y <= 6'd0;
+                            p_body2_x <= 6'd0; p_body2_y <= 6'd0;
+                            p_body3_x <= 6'd0; p_body3_y <= 6'd0;
+                            p_body4_x <= 6'd0; p_body4_y <= 6'd0;
+                            p_body5_x <= 6'd0; p_body5_y <= 6'd0;
+                            p_body6_x <= 6'd0; p_body6_y <= 6'd0;
+                            p_direction <= P_INIT_DIR;
+                            p_length <= INITIAL_SNAKE_LEN;
+                        end
+                        if (respawn_r_died) begin
+                            if (!spawn_occupied(R_INIT_HEAD_X, R_INIT_HEAD_Y, R_INIT_BODY0_X, R_INIT_BODY0_Y,
+                                    p_head_x, p_head_y,
+                                    p_body0_x, p_body0_y, p_body1_x, p_body1_y, p_body2_x, p_body2_y,
+                                    p_body3_x, p_body3_y, p_body4_x, p_body4_y, p_body5_x, p_body5_y,
+                                    p_body6_x, p_body6_y, p_length)) begin
+                                r_head_x <= R_INIT_HEAD_X;  r_head_y <= R_INIT_HEAD_Y;
+                                r_body0_x <= R_INIT_BODY0_X; r_body0_y <= R_INIT_BODY0_Y;
+                            end else begin
+                                r_head_x <= R_ALT_HEAD_X;  r_head_y <= R_ALT_HEAD_Y;
+                                r_body0_x <= R_ALT_BODY0_X; r_body0_y <= R_ALT_BODY0_Y;
+                            end
+                            r_body1_x <= 6'd0; r_body1_y <= 6'd0;
+                            r_body2_x <= 6'd0; r_body2_y <= 6'd0;
+                            r_body3_x <= 6'd0; r_body3_y <= 6'd0;
+                            r_body4_x <= 6'd0; r_body4_y <= 6'd0;
+                            r_body5_x <= 6'd0; r_body5_y <= 6'd0;
+                            r_body6_x <= 6'd0; r_body6_y <= 6'd0;
+                            r_direction <= R_INIT_DIR;
+                            r_length <= INITIAL_SNAKE_LEN;
+                        end
+                        respawn_p_died <= 1'b0;
+                        respawn_r_died <= 1'b0;
+                        fsm_state <= PLAYING;
+                    end
+                    // Allow restart during death animation
                     if (start_btn)
                         fsm_state <= IDLE;
                 end

@@ -188,6 +188,7 @@ module top_serpent_says #(
     wire [5:0]  food_x, food_y;
     wire [1:0]  last_turn_source;
     wire [1:0]  last_player_cmd;
+    wire        anim_p_dying, anim_r_dying, anim_food_eaten;
     wire        dbg_p_turn_accepted, dbg_r_dir_changed;
     wire        dbg_p_collision, dbg_r_collision;
     wire        dbg_p_ate, dbg_r_ate;
@@ -249,6 +250,8 @@ module top_serpent_says #(
         .r_direction(r_direction), .r_length(r_length), .r_lives(r_lives),
         .food_x(food_x), .food_y(food_y),
         .last_turn_source(last_turn_source), .last_player_cmd(last_player_cmd),
+        .anim_p_dying(anim_p_dying), .anim_r_dying(anim_r_dying),
+        .anim_food_eaten(anim_food_eaten),
         .dbg_p_turn_accepted(dbg_p_turn_accepted),
         .dbg_r_dir_changed(dbg_r_dir_changed),
         .dbg_p_collision(dbg_p_collision),
@@ -350,6 +353,8 @@ module top_serpent_says #(
         .pixel_x(pixel_x), .pixel_y(pixel_y),
         .video_active(video_active),
         .fsm_state(fsm_state),
+        .anim_p_dying(anim_p_dying), .anim_r_dying(anim_r_dying),
+        .anim_food_eaten(anim_food_eaten),
         .p_head_x(p_head_x), .p_head_y(p_head_y),
         .p_body0_x(p_body0_x), .p_body0_y(p_body0_y),
         .p_body1_x(p_body1_x), .p_body1_y(p_body1_y),

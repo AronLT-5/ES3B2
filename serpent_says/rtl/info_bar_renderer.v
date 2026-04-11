@@ -331,6 +331,12 @@ module info_bar_renderer (
                 7'd8: row4_char_fn = 7'h52;  // R
                 default: row4_char_fn = 7'h20;
             endcase
+            3'd5: case (idx)  // RESPAWNING
+                7'd0: row4_char_fn = 7'h4B;  // K
+                7'd1: row4_char_fn = 7'h4F;  // O
+                7'd2: row4_char_fn = 7'h21;  // !
+                default: row4_char_fn = 7'h20;
+            endcase
             default: row4_char_fn = 7'h20;
         endcase
     endfunction
@@ -431,6 +437,8 @@ module info_bar_renderer (
                     text_color = blink ? PAUSE_COLOR : BG_COLOR;
                 else if (fsm_state == GAME_OVER)
                     text_color = WARN_COLOR;
+                else if (fsm_state == 3'd5)  // RESPAWNING
+                    text_color = blink ? WARN_COLOR : BG_COLOR;
                 else if (fsm_state == VICTORY)
                     text_color = TITLE_COLOR;
                 else

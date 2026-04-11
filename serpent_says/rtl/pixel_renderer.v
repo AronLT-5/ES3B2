@@ -1,8 +1,13 @@
 `timescale 1ns / 1ps
 
-// Sprite-based pixel renderer with deterministic priority chain.
-// Consumes sprite ROM data via address/data port pairs.
-// Banner ROMs use block RAM with 1-cycle latency (address registered externally).
+// Sprite-based pixel renderer with animation effects:
+//   - Death flash (dying snake blinks white/red during RESPAWNING)
+//   - Screen shake (playfield Y-offset wobbles during RESPAWNING)
+//   - Food pickup flash (food tile glows gold for ~0.2s after eaten)
+//   - Snake body gradient (segments darken toward the tail)
+//   - Game Over pulsing red vignette
+//   - Victory pulsing gold shimmer
+//   - Idle state cycling background colors
 
 module pixel_renderer #(
     parameter PLAYFIELD_Y_START = 106,
@@ -18,6 +23,11 @@ module pixel_renderer #(
 
     // Game state
     input  wire [2:0]  fsm_state,
+
+    // Animation signals
+    input  wire        anim_p_dying,
+    input  wire        anim_r_dying,
+    input  wire        anim_food_eaten,
 
     // Player snake
     input  wire [5:0]  p_head_x,  input wire [5:0] p_head_y,
@@ -51,7 +61,7 @@ module pixel_renderer #(
     input  wire        info_active,
     input  wire [11:0] info_rgb,
 
-    // Sprite ROM data interfaces (active-direction head already muxed)
+    // Sprite ROM data interfaces
     input  wire [11:0] p_head_sprite_data,
     output wire [7:0]  p_head_sprite_addr,
     input  wire [11:0] r_head_sprite_data,
@@ -61,14 +71,14 @@ module pixel_renderer #(
     input  wire [11:0] obstacle_sprite_data,
     output wire [7:0]  obstacle_sprite_addr,
 
-    // Banner ROMs (block RAM, 1-cycle latency: address driven this cycle, data valid next)
+    // Banner ROMs (block RAM, 1-cycle latency)
     input  wire [11:0] victory_sprite_data,
     output wire [13:0] victory_sprite_addr,
     input  wire [11:0] gameover_sprite_data,
     output wire [13:0] gameover_sprite_addr,
 
     // Temperature background state
-    input  wire [1:0]  temp_state,     // 00=COOL, 01=NEUTRAL, 10=HOT
+    input  wire [1:0]  temp_state,
 
     // Final output
     output wire [3:0]  vga_r,
@@ -76,56 +86,102 @@ module pixel_renderer #(
     output wire [3:0]  vga_b
 );
 
-    // --- Colour theme (editable) ---
-    localparam [11:0] P_BODY_COLOR   = 12'h57F;  // player body blue (matching head)
-    localparam [11:0] R_BODY_COLOR   = 12'hF00;  // rival body red (matching head)
-    localparam [11:0] BORDER_COLOR   = 12'hFFF;  // white
-    localparam [11:0] PF_BG_COOL     = 12'h124;  // playfield bg: cool (blue-ish)
-    localparam [11:0] PF_BG_NEUTRAL  = 12'h131;  // playfield bg: neutral (green-ish)
-    localparam [11:0] PF_BG_HOT      = 12'h311;  // playfield bg: hot (red-ish)
-    localparam [11:0] LOWER_BG       = 12'h002;  // dark blue
+    // --- Colour theme ---
+    localparam [11:0] P_BODY_BASE    = 12'h57F;  // player body blue
+    localparam [11:0] R_BODY_BASE    = 12'hF00;  // rival body red
+    localparam [11:0] BORDER_COLOR   = 12'hFFF;
+    localparam [11:0] PF_BG_COOL     = 12'h124;
+    localparam [11:0] PF_BG_NEUTRAL  = 12'h131;
+    localparam [11:0] PF_BG_HOT      = 12'h311;
+    localparam [11:0] LOWER_BG       = 12'h002;
     localparam [11:0] BLACK          = 12'h000;
+    localparam [11:0] DEATH_FLASH_A  = 12'hFFF;
+    localparam [11:0] DEATH_FLASH_B  = 12'hF44;
+    localparam [11:0] FOOD_FLASH_CLR = 12'hFD0;  // Gold flash on eat
 
     // FSM states
-    localparam VICTORY   = 3'd3;
-    localparam GAME_OVER = 3'd4;
+    localparam IDLE       = 3'd0;
+    localparam PLAYING    = 3'd1;
+    localparam VICTORY    = 3'd3;
+    localparam GAME_OVER  = 3'd4;
+    localparam RESPAWNING = 3'd5;
 
-    // --- Obstacles (shared definition) ---
+    // --- Obstacles ---
     `include "arena_map.vh"
 
-    // --- Temperature-controlled playfield background ---
+    // ═══════════════════════════════════════════════
+    // Animation counter (free-running 25 MHz)
+    // ═══════════════════════════════════════════════
+    reg [23:0] anim_cnt;
+    always @(posedge clk) anim_cnt <= anim_cnt + 24'd1;
+
+    wire blink_fast = anim_cnt[21];   // ~6 Hz
+    wire blink_slow = anim_cnt[22];   // ~3 Hz
+    wire [3:0] fade = anim_cnt[23:20]; // Slow 4-bit ramp
+
+    // ═══════════════════════════════════════════════
+    // Food pickup flash timer (~0.2s = 5M ticks)
+    // ═══════════════════════════════════════════════
+    reg [22:0] food_flash_cnt;
+    wire       food_flashing = (food_flash_cnt != 0);
+
+    always @(posedge clk) begin
+        if (anim_food_eaten)
+            food_flash_cnt <= 23'd5_000_000;
+        else if (food_flash_cnt != 0)
+            food_flash_cnt <= food_flash_cnt - 23'd1;
+    end
+
+    // ═══════════════════════════════════════════════
+    // Screen shake during RESPAWNING
+    // Offset playfield Y by +/-2 pixels based on fast counter
+    // ═══════════════════════════════════════════════
+    wire signed [2:0] shake_offset = (fsm_state == RESPAWNING) ?
+        (anim_cnt[19] ? 3'sd2 : -3'sd2) : 3'sd0;
+
+    wire [9:0] shaken_pf_y_start = PLAYFIELD_Y_START + {{7{shake_offset[2]}}, shake_offset};
+    wire [9:0] shaken_pf_y_end   = PLAYFIELD_Y_END   + {{7{shake_offset[2]}}, shake_offset};
+
+    // ═══════════════════════════════════════════════
+    // Temperature-controlled playfield background
+    // ═══════════════════════════════════════════════
     wire [11:0] pf_bg_color = (temp_state == 2'b00) ? PF_BG_COOL    :
                               (temp_state == 2'b10) ? PF_BG_HOT     :
                                                       PF_BG_NEUTRAL;
 
-    // --- Region computation ---
+    // ═══════════════════════════════════════════════
+    // Region computation (using shaken Y for playfield)
+    // ═══════════════════════════════════════════════
     wire in_playfield = video_active &&
                         (pixel_x <= 10'd639) &&
-                        (pixel_y >= PLAYFIELD_Y_START) &&
-                        (pixel_y <= PLAYFIELD_Y_END);
+                        (pixel_y >= shaken_pf_y_start) &&
+                        (pixel_y <= shaken_pf_y_end);
 
     wire playfield_border = in_playfield &&
         (pixel_x == 10'd0 || pixel_x == 10'd639 ||
-         pixel_y == PLAYFIELD_Y_START || pixel_y == PLAYFIELD_Y_END);
+         pixel_y == shaken_pf_y_start || pixel_y == shaken_pf_y_end);
 
     wire in_lower_bg = video_active &&
                        (pixel_y >= 10'd100) && !in_playfield;
 
-    // --- Tile coordinates ---
-    wire [9:0] pf_rel_y = pixel_y - PLAYFIELD_Y_START;
-    wire [5:0] tile_x = pixel_x[9:4];                // pixel_x / 16
-    wire [5:0] tile_y = pf_rel_y[9:4];               // (pixel_y - 106) / 16
-    wire [3:0] tile_px = pixel_x[3:0];               // pixel_x % 16
-    wire [3:0] tile_py = pf_rel_y[3:0];              // (pixel_y - 106) % 16
+    // ═══════════════════════════════════════════════
+    // Tile coordinates (using shaken Y)
+    // ═══════════════════════════════════════════════
+    wire [9:0] pf_rel_y = pixel_y - shaken_pf_y_start;
+    wire [5:0] tile_x = pixel_x[9:4];
+    wire [5:0] tile_y = pf_rel_y[9:4];
+    wire [3:0] tile_px = pixel_x[3:0];
+    wire [3:0] tile_py = pf_rel_y[3:0];
 
-    // Sprite address for 16x16 tiles
     wire [7:0] tile_sprite_addr = {tile_py, tile_px};
 
-    // --- Entity hit detection (tile space) ---
+    // ═══════════════════════════════════════════════
+    // Entity hit detection
+    // ═══════════════════════════════════════════════
     wire hit_p_head = in_playfield && (tile_x == p_head_x) && (tile_y == p_head_y);
     wire hit_r_head = in_playfield && (tile_x == r_head_x) && (tile_y == r_head_y);
 
-    // Player body segments
+    // Player body segments with index tracking for gradient
     wire hit_p_b0 = in_playfield && (tile_x == p_body0_x) && (tile_y == p_body0_y);
     wire hit_p_b1 = in_playfield && (p_length > 4'd2) && (tile_x == p_body1_x) && (tile_y == p_body1_y);
     wire hit_p_b2 = in_playfield && (p_length > 4'd3) && (tile_x == p_body2_x) && (tile_y == p_body2_y);
@@ -134,6 +190,14 @@ module pixel_renderer #(
     wire hit_p_b5 = in_playfield && (p_length > 4'd6) && (tile_x == p_body5_x) && (tile_y == p_body5_y);
     wire hit_p_b6 = in_playfield && (p_length > 4'd7) && (tile_x == p_body6_x) && (tile_y == p_body6_y);
     wire hit_p_body = hit_p_b0 || hit_p_b1 || hit_p_b2 || hit_p_b3 || hit_p_b4 || hit_p_b5 || hit_p_b6;
+
+    // Player body segment index (0=closest to head, 6=tail) for gradient
+    wire [2:0] p_seg_idx = hit_p_b0 ? 3'd0 :
+                           hit_p_b1 ? 3'd1 :
+                           hit_p_b2 ? 3'd2 :
+                           hit_p_b3 ? 3'd3 :
+                           hit_p_b4 ? 3'd4 :
+                           hit_p_b5 ? 3'd5 : 3'd6;
 
     // Rival body segments
     wire hit_r_b0 = in_playfield && (tile_x == r_body0_x) && (tile_y == r_body0_y);
@@ -145,22 +209,43 @@ module pixel_renderer #(
     wire hit_r_b6 = in_playfield && (r_length > 4'd7) && (tile_x == r_body6_x) && (tile_y == r_body6_y);
     wire hit_r_body = hit_r_b0 || hit_r_b1 || hit_r_b2 || hit_r_b3 || hit_r_b4 || hit_r_b5 || hit_r_b6;
 
-    // Food
-    wire hit_food = in_playfield && (tile_x == food_x) && (tile_y == food_y);
+    wire [2:0] r_seg_idx = hit_r_b0 ? 3'd0 :
+                           hit_r_b1 ? 3'd1 :
+                           hit_r_b2 ? 3'd2 :
+                           hit_r_b3 ? 3'd3 :
+                           hit_r_b4 ? 3'd4 :
+                           hit_r_b5 ? 3'd5 : 3'd6;
 
-    // Obstacles (shared definition from arena_map.vh)
+    wire hit_food = in_playfield && (tile_x == food_x) && (tile_y == food_y);
     wire hit_obs = in_playfield && obstacle_at(tile_x, tile_y);
 
-    // --- Sprite ROM address assignment ---
+    // ═══════════════════════════════════════════════
+    // Body gradient: darken each channel by seg_idx
+    // P_BODY_BASE = 12'h57F -> R=5, G=7, B=F
+    // Each segment reduces brightness by 1 per channel
+    // ═══════════════════════════════════════════════
+    wire [3:0] p_grad_r = (P_BODY_BASE[11:8] > p_seg_idx) ? (P_BODY_BASE[11:8] - {1'b0, p_seg_idx}) : 4'd1;
+    wire [3:0] p_grad_g = (P_BODY_BASE[7:4]  > p_seg_idx) ? (P_BODY_BASE[7:4]  - {1'b0, p_seg_idx}) : 4'd1;
+    wire [3:0] p_grad_b = (P_BODY_BASE[3:0]  > p_seg_idx) ? (P_BODY_BASE[3:0]  - {1'b0, p_seg_idx}) : 4'd1;
+    wire [11:0] p_body_grad = {p_grad_r, p_grad_g, p_grad_b};
+
+    wire [3:0] r_grad_r = (R_BODY_BASE[11:8] > r_seg_idx) ? (R_BODY_BASE[11:8] - {1'b0, r_seg_idx}) : 4'd1;
+    wire [3:0] r_grad_g = (R_BODY_BASE[7:4]  > r_seg_idx) ? (R_BODY_BASE[7:4]  - {1'b0, r_seg_idx}) : 4'd1;
+    wire [3:0] r_grad_b = (R_BODY_BASE[3:0]  > r_seg_idx) ? (R_BODY_BASE[3:0]  - {1'b0, r_seg_idx}) : 4'd1;
+    wire [11:0] r_body_grad = {r_grad_r, r_grad_g, r_grad_b};
+
+    // ═══════════════════════════════════════════════
+    // Sprite ROM address assignment
+    // ═══════════════════════════════════════════════
     assign p_head_sprite_addr   = tile_sprite_addr;
     assign r_head_sprite_addr   = tile_sprite_addr;
     assign food_sprite_addr     = tile_sprite_addr;
     assign obstacle_sprite_addr = tile_sprite_addr;
 
-    // --- Banner overlay ---
-    // Victory: 312x40, centered at (164, 270)
+    // ═══════════════════════════════════════════════
+    // Banner overlay
+    // ═══════════════════════════════════════════════
     localparam VIC_X = 164, VIC_Y = 270, VIC_W = 312, VIC_H = 40;
-    // GameOver: 368x40, centered at (136, 270)
     localparam GO_X  = 136, GO_Y  = 270, GO_W  = 368, GO_H  = 40;
 
     wire in_victory_banner = (fsm_state == VICTORY) &&
@@ -171,17 +256,14 @@ module pixel_renderer #(
         (pixel_x >= GO_X) && (pixel_x < GO_X + GO_W) &&
         (pixel_y >= GO_Y) && (pixel_y < GO_Y + GO_H);
 
-    // Banner address: row * WIDTH + col using shift-and-add
     wire [5:0] vic_row = pixel_y - VIC_Y;
     wire [8:0] vic_col = pixel_x - VIC_X;
-    // 312 = 256 + 32 + 16 + 8
     wire [13:0] vic_addr = ({8'b0, vic_row} << 8) + ({8'b0, vic_row} << 5) +
                            ({8'b0, vic_row} << 4) + ({8'b0, vic_row} << 3) +
                            {5'b0, vic_col};
 
     wire [5:0] go_row = pixel_y - GO_Y;
     wire [8:0] go_col = pixel_x - GO_X;
-    // 368 = 256 + 64 + 32 + 16
     wire [13:0] go_addr = ({8'b0, go_row} << 8) + ({8'b0, go_row} << 6) +
                           ({8'b0, go_row} << 5) + ({8'b0, go_row} << 4) +
                           {5'b0, go_col};
@@ -189,36 +271,87 @@ module pixel_renderer #(
     assign victory_sprite_addr  = vic_addr;
     assign gameover_sprite_addr = go_addr;
 
-    // --- Priority chain ---
+    // Death flash colors
+    wire [11:0] death_color = blink_fast ? DEATH_FLASH_A : DEATH_FLASH_B;
+
+    // Game Over pulsing red background
+    wire [11:0] go_bg_tint = {fade, 4'h0, 4'h0};
+
+    // Victory pulsing gold background
+    wire [11:0] vic_bg_tint = {fade, fade[3:1], 4'h0};
+
+    // ═══════════════════════════════════════════════
+    // Priority chain
+    // ═══════════════════════════════════════════════
     reg [11:0] pixel_rgb;
 
     always @(*) begin
         if (!video_active) begin
             pixel_rgb = BLACK;
+
         end else if (info_active) begin
             pixel_rgb = info_rgb;
+
+        // Victory banner with gold shimmer
         end else if (in_victory_banner && victory_sprite_data != 12'h000) begin
-            pixel_rgb = victory_sprite_data;
+            pixel_rgb = blink_slow ? (victory_sprite_data | 12'h220) : victory_sprite_data;
+
+        // Game Over banner with red pulse
         end else if (in_gameover_banner && gameover_sprite_data != 12'h000) begin
-            pixel_rgb = gameover_sprite_data;
+            pixel_rgb = blink_slow ? (gameover_sprite_data | 12'h200) : gameover_sprite_data;
+
+        // Border: flash red (game over) or gold (victory)
         end else if (playfield_border) begin
-            pixel_rgb = BORDER_COLOR;
+            if (fsm_state == GAME_OVER)
+                pixel_rgb = blink_slow ? 12'hF00 : BORDER_COLOR;
+            else if (fsm_state == VICTORY)
+                pixel_rgb = blink_slow ? 12'hFD0 : BORDER_COLOR;
+            else
+                pixel_rgb = BORDER_COLOR;
+
+        // Player head: flash white during death
         end else if (hit_p_head && p_head_sprite_data != 12'h000) begin
-            pixel_rgb = p_head_sprite_data;
+            pixel_rgb = anim_p_dying ? (blink_fast ? 12'hFFF : p_head_sprite_data) : p_head_sprite_data;
+
+        // Rival head: flash white during death
         end else if (hit_r_head && r_head_sprite_data != 12'h000) begin
-            pixel_rgb = r_head_sprite_data;
+            pixel_rgb = anim_r_dying ? (blink_fast ? 12'hFFF : r_head_sprite_data) : r_head_sprite_data;
+
+        // Player body: gradient + death flash
         end else if (hit_p_body) begin
-            pixel_rgb = P_BODY_COLOR;
+            pixel_rgb = anim_p_dying ? death_color : p_body_grad;
+
+        // Rival body: gradient + death flash
         end else if (hit_r_body) begin
-            pixel_rgb = R_BODY_COLOR;
-        end else if (hit_food && food_sprite_data != 12'h000) begin
-            pixel_rgb = food_sprite_data;
+            pixel_rgb = anim_r_dying ? death_color : r_body_grad;
+
+        // Food: gold flash after eaten, normal sprite otherwise
+        end else if (hit_food) begin
+            if (food_flashing)
+                pixel_rgb = blink_fast ? FOOD_FLASH_CLR : 12'hFA0;
+            else if (food_sprite_data != 12'h000)
+                pixel_rgb = food_sprite_data;
+            else
+                pixel_rgb = pf_bg_color;
+
+        // Obstacles
         end else if (hit_obs && obstacle_sprite_data != 12'h000) begin
             pixel_rgb = obstacle_sprite_data;
+
+        // Playfield background: tinted in terminal/idle states
         end else if (in_playfield) begin
-            pixel_rgb = pf_bg_color;
+            if (fsm_state == GAME_OVER)
+                pixel_rgb = go_bg_tint;
+            else if (fsm_state == VICTORY)
+                pixel_rgb = vic_bg_tint;
+            else if (fsm_state == RESPAWNING)
+                pixel_rgb = blink_fast ? 12'h200 : pf_bg_color;
+            else
+                pixel_rgb = pf_bg_color;
+
         end else if (in_lower_bg) begin
             pixel_rgb = LOWER_BG;
+
         end else begin
             pixel_rgb = BLACK;
         end
