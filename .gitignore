@@ -37,5 +37,11 @@ Thumbs.db
 # Ignore zip files that may be generated for sharing evidence
 *.zip
 
+# Ignore any TCL scripts that may be generated
+*.tcl
+
 # Ignore Speech_Classification_test 
 Speech_Classification_test/
+
+# Local sprite conversion helper
+serpent_says/Sprites/png_to_mem.py

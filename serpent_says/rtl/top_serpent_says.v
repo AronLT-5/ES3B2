@@ -270,14 +270,33 @@ module top_serpent_says #(
     sprite_rom #(.SPRITE_FILE("Snake_head_down.mem"),  .DEPTH(256)) u_p_head_down (.clk(clk_25mhz), .addr(p_head_sprite_addr), .data(p_head_down_data));
     sprite_rom #(.SPRITE_FILE("Snake_head_left.mem"),  .DEPTH(256)) u_p_head_left (.clk(clk_25mhz), .addr(p_head_sprite_addr), .data(p_head_left_data));
 
-    // Direction MUX for player head
-    reg [11:0] p_head_sprite_data;
+    // Player eating sprites (4 directions)
+    wire [11:0] p_eat_up_data, p_eat_right_data, p_eat_down_data, p_eat_left_data;
+
+    sprite_rom #(.SPRITE_FILE("Player_Eating_up.mem"),    .DEPTH(256)) u_p_eat_up   (.clk(clk_25mhz), .addr(p_head_sprite_addr), .data(p_eat_up_data));
+    sprite_rom #(.SPRITE_FILE("Player_Eating_right.mem"), .DEPTH(256)) u_p_eat_right(.clk(clk_25mhz), .addr(p_head_sprite_addr), .data(p_eat_right_data));
+    sprite_rom #(.SPRITE_FILE("Player_Eating_down.mem"),  .DEPTH(256)) u_p_eat_down (.clk(clk_25mhz), .addr(p_head_sprite_addr), .data(p_eat_down_data));
+    sprite_rom #(.SPRITE_FILE("Player_Eating_left.mem"),  .DEPTH(256)) u_p_eat_left (.clk(clk_25mhz), .addr(p_head_sprite_addr), .data(p_eat_left_data));
+
+    // Direction MUX for player head (normal)
+    reg [11:0] p_head_sprite_data_normal;
     always @(*) begin
         case (p_direction)
-            2'b00: p_head_sprite_data = p_head_up_data;
-            2'b01: p_head_sprite_data = p_head_right_data;
-            2'b10: p_head_sprite_data = p_head_down_data;
-            2'b11: p_head_sprite_data = p_head_left_data;
+            2'b00: p_head_sprite_data_normal = p_head_up_data;
+            2'b01: p_head_sprite_data_normal = p_head_right_data;
+            2'b10: p_head_sprite_data_normal = p_head_down_data;
+            2'b11: p_head_sprite_data_normal = p_head_left_data;
+        endcase
+    end
+
+    // Direction MUX for player head (eating)
+    reg [11:0] p_eat_sprite_data;
+    always @(*) begin
+        case (p_direction)
+            2'b00: p_eat_sprite_data = p_eat_up_data;
+            2'b01: p_eat_sprite_data = p_eat_right_data;
+            2'b10: p_eat_sprite_data = p_eat_down_data;
+            2'b11: p_eat_sprite_data = p_eat_left_data;
         endcase
     end
 
@@ -290,15 +309,57 @@ module top_serpent_says #(
     sprite_rom #(.SPRITE_FILE("Bot_Snake_head_down.mem"),  .DEPTH(256)) u_r_head_down (.clk(clk_25mhz), .addr(r_head_sprite_addr), .data(r_head_down_data));
     sprite_rom #(.SPRITE_FILE("Bot_Snake_head_left.mem"),  .DEPTH(256)) u_r_head_left (.clk(clk_25mhz), .addr(r_head_sprite_addr), .data(r_head_left_data));
 
-    reg [11:0] r_head_sprite_data;
+    // Rival eating sprites (4 directions)
+    wire [11:0] r_eat_up_data, r_eat_right_data, r_eat_down_data, r_eat_left_data;
+
+    sprite_rom #(.SPRITE_FILE("Bot_Eat_up.mem"),    .DEPTH(256)) u_r_eat_up   (.clk(clk_25mhz), .addr(r_head_sprite_addr), .data(r_eat_up_data));
+    sprite_rom #(.SPRITE_FILE("Bot_Eat_right.mem"), .DEPTH(256)) u_r_eat_right(.clk(clk_25mhz), .addr(r_head_sprite_addr), .data(r_eat_right_data));
+    sprite_rom #(.SPRITE_FILE("Bot_Eat_down.mem"),  .DEPTH(256)) u_r_eat_down (.clk(clk_25mhz), .addr(r_head_sprite_addr), .data(r_eat_down_data));
+    sprite_rom #(.SPRITE_FILE("Bot_Eat_left.mem"),  .DEPTH(256)) u_r_eat_left (.clk(clk_25mhz), .addr(r_head_sprite_addr), .data(r_eat_left_data));
+
+    // Direction MUX for rival head (normal)
+    reg [11:0] r_head_sprite_data_normal;
     always @(*) begin
         case (r_direction)
-            2'b00: r_head_sprite_data = r_head_up_data;
-            2'b01: r_head_sprite_data = r_head_right_data;
-            2'b10: r_head_sprite_data = r_head_down_data;
-            2'b11: r_head_sprite_data = r_head_left_data;
+            2'b00: r_head_sprite_data_normal = r_head_up_data;
+            2'b01: r_head_sprite_data_normal = r_head_right_data;
+            2'b10: r_head_sprite_data_normal = r_head_down_data;
+            2'b11: r_head_sprite_data_normal = r_head_left_data;
         endcase
     end
+
+    // Direction MUX for rival head (eating)
+    reg [11:0] r_eat_sprite_data;
+    always @(*) begin
+        case (r_direction)
+            2'b00: r_eat_sprite_data = r_eat_up_data;
+            2'b01: r_eat_sprite_data = r_eat_right_data;
+            2'b10: r_eat_sprite_data = r_eat_down_data;
+            2'b11: r_eat_sprite_data = r_eat_left_data;
+        endcase
+    end
+
+    // --- Eating animation timers (~0.2s = 5,000,000 cycles at 25 MHz) ---
+    reg [22:0] p_eat_cnt, r_eat_cnt;
+    wire p_eating = (p_eat_cnt != 0);
+    wire r_eating = (r_eat_cnt != 0);
+
+    always @(posedge clk_25mhz or negedge CPU_RESETN) begin
+        if (!CPU_RESETN) begin
+            p_eat_cnt <= 23'd0;
+            r_eat_cnt <= 23'd0;
+        end else begin
+            if (dbg_p_ate) p_eat_cnt <= 23'd5_000_000;
+            else if (p_eat_cnt != 0) p_eat_cnt <= p_eat_cnt - 23'd1;
+
+            if (dbg_r_ate) r_eat_cnt <= 23'd5_000_000;
+            else if (r_eat_cnt != 0) r_eat_cnt <= r_eat_cnt - 23'd1;
+        end
+    end
+
+    // Final head sprite: eating overrides normal
+    wire [11:0] p_head_sprite_data = p_eating ? p_eat_sprite_data : p_head_sprite_data_normal;
+    wire [11:0] r_head_sprite_data = r_eating ? r_eat_sprite_data : r_head_sprite_data_normal;
 
     // Food sprite
     wire [7:0]  food_sprite_addr;
@@ -326,6 +387,18 @@ module top_serpent_says #(
     wire [11:0] gameover_sprite_data;
     sprite_rom #(.SPRITE_FILE("gameOver.mem"), .DEPTH(14720), .WIDTH(368), .USE_BLOCK_ROM(1))
         u_gameover_sprite (.clk(clk_25mhz), .addr(gameover_sprite_addr), .data(gameover_sprite_data));
+
+    // Logo sprite (400x52 = 20800, block ROM)
+    wire [14:0] logo_sprite_addr;
+    wire [11:0] logo_sprite_data;
+    sprite_rom #(.SPRITE_FILE("Logo.mem"), .DEPTH(20800), .WIDTH(400), .USE_BLOCK_ROM(1))
+        u_logo_sprite (.clk(clk_25mhz), .addr(logo_sprite_addr), .data(logo_sprite_data));
+
+    // Title sprite (400x225 = 90000, block ROM)
+    wire [16:0] title_sprite_addr;
+    wire [11:0] title_sprite_data;
+    sprite_rom #(.SPRITE_FILE("Title.mem"), .DEPTH(90000), .WIDTH(400), .USE_BLOCK_ROM(1))
+        u_title_sprite (.clk(clk_25mhz), .addr(title_sprite_addr), .data(title_sprite_data));
 
     // --- Info bar renderer ---
     wire        info_active;
@@ -387,6 +460,10 @@ module top_serpent_says #(
         .victory_sprite_addr(victory_sprite_addr),
         .gameover_sprite_data(gameover_sprite_data),
         .gameover_sprite_addr(gameover_sprite_addr),
+        .logo_sprite_data(logo_sprite_data),
+        .logo_sprite_addr(logo_sprite_addr),
+        .title_sprite_data(title_sprite_data),
+        .title_sprite_addr(title_sprite_addr),
         .temp_state(temp_state),
         .vga_r(VGA_R), .vga_g(VGA_G), .vga_b(VGA_B)
     );

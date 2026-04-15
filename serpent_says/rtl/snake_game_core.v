@@ -96,7 +96,8 @@ module snake_game_core #(
     localparam PAUSED     = 3'd2;
     localparam VICTORY    = 3'd3;
     localparam GAME_OVER  = 3'd4;
-    localparam RESPAWNING = 3'd5;  // Death animation freeze before respawn
+    localparam RESPAWNING    = 3'd5;  // Death animation freeze before respawn
+    localparam TITLE_SCREEN  = 3'd6;  // Logo + Title display before game start
 
     // Respawn animation timer (~1.5s at 25 MHz)
     localparam RESPAWN_TICKS = 25'd37_500_000;
@@ -448,6 +449,12 @@ module snake_game_core #(
             case (fsm_state)
                 IDLE: begin
                     if (start_btn) begin
+                        fsm_state <= TITLE_SCREEN;
+                    end
+                end
+
+                TITLE_SCREEN: begin
+                    if (start_btn) begin
                         fsm_state <= PLAYING;
                         // Full game init
                         p_head_x <= P_INIT_HEAD_X;  p_head_y <= P_INIT_HEAD_Y;
@@ -485,8 +492,8 @@ module snake_game_core #(
                     if (pause_sw) begin
                         fsm_state <= PAUSED;
                     end else if (start_btn) begin
-                        // Restart from PLAYING (go back to IDLE->PLAYING)
-                        fsm_state <= IDLE;
+                        // Restart from PLAYING
+                        fsm_state <= TITLE_SCREEN;
                     end else if (game_tick) begin
                         // --- MOVEMENT TICK ---
                         dbg_p_turn_r <= pending_valid;
@@ -581,7 +588,7 @@ module snake_game_core #(
                     if (!pause_sw)
                         fsm_state <= PLAYING;
                     if (start_btn)
-                        fsm_state <= IDLE;
+                        fsm_state <= TITLE_SCREEN;
                 end
 
                 RESPAWNING: begin
@@ -638,12 +645,12 @@ module snake_game_core #(
                     end
                     // Allow restart during death animation
                     if (start_btn)
-                        fsm_state <= IDLE;
+                        fsm_state <= TITLE_SCREEN;
                 end
 
                 VICTORY, GAME_OVER: begin
                     if (start_btn)
-                        fsm_state <= IDLE;
+                        fsm_state <= TITLE_SCREEN;
                 end
 
                 default: fsm_state <= IDLE;

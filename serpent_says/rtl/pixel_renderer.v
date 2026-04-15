@@ -77,6 +77,12 @@ module pixel_renderer #(
     input  wire [11:0] gameover_sprite_data,
     output wire [13:0] gameover_sprite_addr,
 
+    // Logo & Title ROMs (block RAM, 1-cycle latency)
+    input  wire [11:0] logo_sprite_data,
+    output wire [14:0] logo_sprite_addr,
+    input  wire [11:0] title_sprite_data,
+    output wire [16:0] title_sprite_addr,
+
     // Temperature background state
     input  wire [1:0]  temp_state,
 
@@ -104,7 +110,8 @@ module pixel_renderer #(
     localparam PLAYING    = 3'd1;
     localparam VICTORY    = 3'd3;
     localparam GAME_OVER  = 3'd4;
-    localparam RESPAWNING = 3'd5;
+    localparam RESPAWNING    = 3'd5;
+    localparam TITLE_SCREEN  = 3'd6;
 
     // --- Obstacles ---
     `include "arena_map.vh"
@@ -248,11 +255,11 @@ module pixel_renderer #(
     localparam VIC_X = 164, VIC_Y = 270, VIC_W = 312, VIC_H = 40;
     localparam GO_X  = 136, GO_Y  = 270, GO_W  = 368, GO_H  = 40;
 
-    wire in_victory_banner = (fsm_state == VICTORY) &&
+    wire in_victory_banner_comb = (fsm_state == VICTORY) &&
         (pixel_x >= VIC_X) && (pixel_x < VIC_X + VIC_W) &&
         (pixel_y >= VIC_Y) && (pixel_y < VIC_Y + VIC_H);
 
-    wire in_gameover_banner = (fsm_state == GAME_OVER) &&
+    wire in_gameover_banner_comb = (fsm_state == GAME_OVER) &&
         (pixel_x >= GO_X) && (pixel_x < GO_X + GO_W) &&
         (pixel_y >= GO_Y) && (pixel_y < GO_Y + GO_H);
 
@@ -270,6 +277,49 @@ module pixel_renderer #(
 
     assign victory_sprite_addr  = vic_addr;
     assign gameover_sprite_addr = go_addr;
+
+    // ═══════════════════════════════════════════════
+    // Logo & Title overlay (TITLE_SCREEN state)
+    // ═══════════════════════════════════════════════
+    localparam LOGO_X = 120, LOGO_Y = 112, LOGO_W = 400, LOGO_H = 52;
+    localparam TITLE_X = 120, TITLE_Y = 176, TITLE_W = 400, TITLE_H = 225;
+
+    wire in_logo_comb = (fsm_state == TITLE_SCREEN) &&
+        (pixel_x >= LOGO_X) && (pixel_x < LOGO_X + LOGO_W) &&
+        (pixel_y >= LOGO_Y) && (pixel_y < LOGO_Y + LOGO_H);
+
+    wire in_title_comb = (fsm_state == TITLE_SCREEN) &&
+        (pixel_x >= TITLE_X) && (pixel_x < TITLE_X + TITLE_W) &&
+        (pixel_y >= TITLE_Y) && (pixel_y < TITLE_Y + TITLE_H);
+
+    // Address = row * 400 + col;  400 = 256 + 128 + 16
+    wire [7:0] logo_row = pixel_y - LOGO_Y;
+    wire [8:0] logo_col = pixel_x - LOGO_X;
+    wire [14:0] logo_addr_calc = ({7'b0, logo_row} << 8) + ({7'b0, logo_row} << 7) +
+                                  ({7'b0, logo_row} << 4) + {6'b0, logo_col};
+
+    wire [7:0] title_row = pixel_y - TITLE_Y;
+    wire [8:0] title_col = pixel_x - TITLE_X;
+    wire [16:0] title_addr_calc = ({9'b0, title_row} << 8) + ({9'b0, title_row} << 7) +
+                                   ({9'b0, title_row} << 4) + {8'b0, title_col};
+
+    assign logo_sprite_addr  = logo_addr_calc;
+    assign title_sprite_addr = title_addr_calc;
+
+    // ═══════════════════════════════════════════════
+    // Delay block-ROM region signals by 1 cycle to match
+    // the 1-cycle read latency of block RAM sprite ROMs.
+    // Without this, the first pixel at the left edge shows
+    // stale data from the previous (out-of-region) address.
+    // ═══════════════════════════════════════════════
+    reg in_victory_banner, in_gameover_banner;
+    reg in_logo, in_title;
+    always @(posedge clk) begin
+        in_victory_banner <= in_victory_banner_comb;
+        in_gameover_banner <= in_gameover_banner_comb;
+        in_logo  <= in_logo_comb;
+        in_title <= in_title_comb;
+    end
 
     // Death flash colors
     wire [11:0] death_color = blink_fast ? DEATH_FLASH_A : DEATH_FLASH_B;
@@ -291,6 +341,14 @@ module pixel_renderer #(
 
         end else if (info_active) begin
             pixel_rgb = info_rgb;
+
+        // Logo overlay (TITLE_SCREEN)
+        end else if (in_logo && logo_sprite_data != 12'h000) begin
+            pixel_rgb = logo_sprite_data;
+
+        // Title overlay (TITLE_SCREEN)
+        end else if (in_title && title_sprite_data != 12'h000) begin
+            pixel_rgb = title_sprite_data;
 
         // Victory banner with gold shimmer
         end else if (in_victory_banner && victory_sprite_data != 12'h000) begin
@@ -348,6 +406,10 @@ module pixel_renderer #(
                 pixel_rgb = blink_fast ? 12'h200 : pf_bg_color;
             else
                 pixel_rgb = pf_bg_color;
+
+        // Title screen background (black behind logo/title)
+        end else if (fsm_state == TITLE_SCREEN) begin
+            pixel_rgb = BLACK;
 
         end else if (in_lower_bg) begin
             pixel_rgb = LOWER_BG;

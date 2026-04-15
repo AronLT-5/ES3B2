@@ -1,0 +1,19 @@
+Screen: 640x480
+Reserved info bar: y=0..99 (must remain visible)
+Safe content area: y=100..479
+
+Recommended overlay sprite placements (all centered in x):
+
+Logo.mem
+- size: 400x52
+- position: x=120, y=112
+
+Title.mem
+- size: 400x225
+- position: x=120, y=176
+- note: place under Logo.mem with 12px vertical gap
+
+Pause.mem
+- size: 400x122
+- position: x=120, y=229
+- note: vertically centered in the safe area (100..479)
