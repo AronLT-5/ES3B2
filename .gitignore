@@ -39,6 +39,10 @@ Thumbs.db
 
 # Ignore any TCL scripts that may be generated
 *.tcl
+!serpent_says/scripts/
+!serpent_says/scripts/*.tcl
+!serpent_says/scripts/waveforms/
+!serpent_says/scripts/waveforms/*.tcl
 
 # Ignore Speech_Classification_test 
 Speech_Classification_test/

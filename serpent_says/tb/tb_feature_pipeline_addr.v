@@ -1,16 +1,10 @@
 `timescale 1ns / 1ps
 
-// Minimal self-checking testbench for the fb_addr_d delay register
-// in feature_pipeline.v. Proves:
-//   1. After reset, fb_addr_d == 0
-//   2. After reset release, fb_addr_d follows fb_addr by one clock
-//   3. The windowing address path does not go X/unknown
-
 module tb_feature_pipeline_addr;
 
-    reg        clk, rst_n;
+    reg clk, reset_n;
+    reg fb_ready;
     reg signed [15:0] fb_data;
-    reg        fb_ready;
 
     wire [7:0]  fb_addr;
     wire        fb_consumed;
@@ -20,115 +14,122 @@ module tb_feature_pipeline_addr;
     wire        ctx_frame_done;
     wire        busy;
 
+    reg signed [15:0] frame_mem [0:255];
+    reg signed [15:0] hann_mem [0:255];
+
+    wire       frame_ready = fb_ready;
+    wire [7:0] fb_addr_d = dut.fb_addr_d;
+    wire       sample_valid = dut.fft_din_we;
+    wire       fft_load_valid = dut.fft_din_we;
+    wire signed [15:0] hann_coeff = hann_mem[fb_addr_d];
+    wire signed [15:0] windowed_sample = dut.windowed_sample;
+    wire       fft_start = dut.fft_start;
+    wire       fft_done = dut.fft_done;
+    wire       mel_start = dut.mel_start;
+    wire       mel_valid = ctx_mel_we;
+    wire [3:0] mel_bin = ctx_mel_idx;
+
     feature_pipeline dut (
-        .clk           (clk),
-        .rst_n         (rst_n),
-        .fb_addr       (fb_addr),
-        .fb_data       (fb_data),
-        .fb_ready      (fb_ready),
-        .fb_consumed   (fb_consumed),
-        .ctx_mel_in    (ctx_mel_in),
-        .ctx_mel_idx   (ctx_mel_idx),
-        .ctx_mel_we    (ctx_mel_we),
+        .clk(clk),
+        .rst_n(reset_n),
+        .fb_addr(fb_addr),
+        .fb_data(fb_data),
+        .fb_ready(fb_ready),
+        .fb_consumed(fb_consumed),
+        .ctx_mel_in(ctx_mel_in),
+        .ctx_mel_idx(ctx_mel_idx),
+        .ctx_mel_we(ctx_mel_we),
         .ctx_frame_done(ctx_frame_done),
-        .busy          (busy)
+        .busy(busy)
     );
 
-    always #20 clk = ~clk;  // 25 MHz
+    always #20 clk = ~clk;
 
-    integer pass_count = 0;
-    integer fail_count = 0;
+    integer pass_count, fail_count;
+    integer i;
+    integer timeout_count;
+    integer ctx_write_count;
+
+    always @(posedge clk or negedge reset_n) begin
+        if (!reset_n)
+            fb_data <= 16'sd0;
+        else
+            fb_data <= frame_mem[fb_addr];
+    end
+
+    always @(posedge clk or negedge reset_n) begin
+        if (!reset_n)
+            ctx_write_count <= 0;
+        else if (ctx_mel_we)
+            ctx_write_count <= ctx_write_count + 1;
+    end
 
     task check;
-        input [31:0] actual;
-        input [31:0] expected;
+        input condition;
         input [159:0] label;
         begin
-            if (actual !== expected) begin
-                $display("FAIL %0s: got %0d expected %0d", label, actual, expected);
+            if (!condition) begin
+                $display("FAIL W9 %0s at %0t", label, $time);
                 fail_count = fail_count + 1;
             end else begin
-                $display("PASS %0s", label);
-                pass_count = pass_count + 1;
-            end
-        end
-    endtask
-
-    task check_not_x;
-        input [7:0] val;
-        input [159:0] label;
-        begin
-            if (^val === 1'bx) begin
-                $display("FAIL %0s: value is X/unknown", label);
-                fail_count = fail_count + 1;
-            end else begin
-                $display("PASS %0s", label);
+                $display("PASS W9 %0s", label);
                 pass_count = pass_count + 1;
             end
         end
     endtask
 
     initial begin
-        $display("=== tb_feature_pipeline_addr ===");
-        clk = 0; rst_n = 0;
-        fb_data = 16'sd1000;
+        $display("=== W9 tb_feature_pipeline_addr ===");
+        clk = 0;
+        reset_n = 0;
         fb_ready = 0;
+        fb_data = 0;
+        pass_count = 0;
+        fail_count = 0;
+        timeout_count = 0;
+        ctx_write_count = 0;
 
-        // Hold reset for several cycles
-        #200;
+        for (i = 0; i < 256; i = i + 1)
+            frame_mem[i] = $signed(i * 16 - 2048);
+        $readmemh("hann_window.mem", hann_mem);
 
-        // T1: fb_addr_d == 0 during reset
-        check(dut.fb_addr_d, 8'd0, "T1:reset_fb_addr_d");
-        check(dut.fb_addr, 8'd0, "T1:reset_fb_addr");
+        repeat (5) @(posedge clk);
+        check(fb_addr == 8'd0 && fb_addr_d == 8'd0 && busy == 1'b0, "reset_known_state");
 
-        // Release reset
-        rst_n = 1;
-        @(posedge clk); @(posedge clk);
+        reset_n = 1'b1;
+        repeat (2) @(posedge clk);
 
-        // T2: fb_addr_d still 0 after reset release (no frame started)
-        check(dut.fb_addr_d, 8'd0, "T2:post_reset_fb_addr_d");
-        check_not_x(dut.fb_addr_d, "T2:not_x_fb_addr_d");
+        @(negedge clk);
+        fb_ready = 1'b1;
 
-        // T3: Start a frame — fb_addr should begin incrementing, fb_addr_d follows one cycle behind
-        fb_ready = 1;
-        @(posedge clk);
-        fb_ready = 0;
+        wait (sample_valid == 1'b1);
+        #1;
+        check(fb_addr_d !== fb_addr, "delayed_address_differs_from_new_request");
+        check(fb_data === frame_mem[fb_addr_d], "fb_data_matches_delayed_address");
+        check(^windowed_sample !== 1'bx && ^hann_coeff !== 1'bx, "window_path_has_no_unknowns");
 
-        // Wait a few cycles for P_WINDOW to start driving fb_addr
-        @(posedge clk); // FSM transitions to P_WINDOW, fb_addr set to 0
-        @(posedge clk); // fb_addr = 0 (win_idx=0), fb_addr_d should be prev fb_addr
-        @(posedge clk); // fb_addr = 1 (win_idx=1), fb_addr_d = 0
+        wait (fb_consumed == 1'b1);
+        @(negedge clk);
+        fb_ready = 1'b0;
 
-        // At this point fb_addr should be advancing and fb_addr_d should trail by 1 cycle
-        check_not_x(dut.fb_addr_d, "T3a:not_x_fb_addr_d");
-        check_not_x(dut.fb_addr, "T3b:not_x_fb_addr");
+        wait (fft_start == 1'b1);
+        wait (fft_done == 1'b1);
+        check(fft_done == 1'b1, "fft_completes");
 
-        // Let the windowing run a few more cycles and verify the delay relationship
-        @(posedge clk);
-        begin : check_delay
-            reg [7:0] prev_addr;
-            prev_addr = dut.fb_addr;
+        wait (mel_start == 1'b1);
+
+        while (ctx_frame_done != 1'b1 && timeout_count < 20000) begin
             @(posedge clk);
-            check(dut.fb_addr_d, prev_addr, "T4:delay_one_cycle");
+            timeout_count = timeout_count + 1;
         end
+        #1;
+        check(ctx_frame_done == 1'b1, "context_frame_done_pulses");
+        check(ctx_write_count >= 15, "context_values_written");
+        check(^ctx_mel_in !== 1'bx && ^mel_bin !== 1'bx, "context_output_has_no_unknowns");
 
-        // T5: Verify windowed_sample path is not X
-        @(posedge clk);
-        if (^dut.windowed_sample === 1'bx) begin
-            $display("FAIL T5:windowed_sample is X");
-            fail_count = fail_count + 1;
-        end else begin
-            $display("PASS T5:windowed_sample_not_x");
-            pass_count = pass_count + 1;
-        end
-
-        // Summary
-        $display("\n===========================");
-        $display("Results: %0d passed, %0d failed", pass_count, fail_count);
-        if (fail_count == 0)
-            $display("ALL TESTS PASSED");
-        else
-            $display("SOME TESTS FAILED");
+        $display("W9 Results: %0d passed, %0d failed", pass_count, fail_count);
+        if (fail_count == 0) $display("W9 ALL TESTS PASSED");
+        else                 $display("W9 SOME TESTS FAILED");
         $finish;
     end
 

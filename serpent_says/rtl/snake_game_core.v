@@ -6,6 +6,7 @@ module snake_game_core #(
     parameter MAX_SNAKE_LEN     = 8,
     parameter ARENA_X_MAX       = 39,
     parameter ARENA_Y_MAX       = 22,
+    parameter RESPAWN_TICKS     = 25'd37_500_000,
     // Player spawns
     parameter [5:0] P_INIT_HEAD_X  = 6'd5,
     parameter [5:0] P_INIT_HEAD_Y  = 6'd5,
@@ -99,8 +100,7 @@ module snake_game_core #(
     localparam RESPAWNING    = 3'd5;  // Death animation freeze before respawn
     localparam TITLE_SCREEN  = 3'd6;  // Logo + Title display before game start
 
-    // Respawn animation timer (~1.5s at 25 MHz)
-    localparam RESPAWN_TICKS = 25'd37_500_000;
+    // Respawn animation timer (~1.5s at 25 MHz by default)
     reg [24:0] respawn_timer;
     // Which snake(s) died in this respawn cycle
     reg        respawn_p_died;
@@ -361,15 +361,35 @@ module snake_game_core #(
     wire [2:0] ct6 = food_idx + 3'd6;
     wire [2:0] ct7 = food_idx + 3'd7;
 
+    function known_true;
+        input value;
+        begin
+            case (value)
+                1'b1: known_true = 1'b1;
+                default: known_true = 1'b0;
+            endcase
+        end
+    endfunction
+
+    // Treat an unknown safety result as unsafe so simulation Xs do not poison
+    // the selected food index.
+    wire food_ct1_safe = known_true(food_cand_safe(ct1));
+    wire food_ct2_safe = known_true(food_cand_safe(ct2));
+    wire food_ct3_safe = known_true(food_cand_safe(ct3));
+    wire food_ct4_safe = known_true(food_cand_safe(ct4));
+    wire food_ct5_safe = known_true(food_cand_safe(ct5));
+    wire food_ct6_safe = known_true(food_cand_safe(ct6));
+    wire food_ct7_safe = known_true(food_cand_safe(ct7));
+
     wire [2:0] next_food_idx =
-        food_cand_safe(ct1) ? ct1 :
-        food_cand_safe(ct2) ? ct2 :
-        food_cand_safe(ct3) ? ct3 :
-        food_cand_safe(ct4) ? ct4 :
-        food_cand_safe(ct5) ? ct5 :
-        food_cand_safe(ct6) ? ct6 :
-        food_cand_safe(ct7) ? ct7 :
-                              ct1;  // fallback
+        food_ct1_safe ? ct1 :
+        food_ct2_safe ? ct2 :
+        food_ct3_safe ? ct3 :
+        food_ct4_safe ? ct4 :
+        food_ct5_safe ? ct5 :
+        food_ct6_safe ? ct6 :
+        food_ct7_safe ? ct7 :
+                        ct1;  // fallback
 
     wire [5:0] next_food_x = fc_x(next_food_idx);
     wire [5:0] next_food_y = fc_y(next_food_idx);

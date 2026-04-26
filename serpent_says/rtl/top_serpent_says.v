@@ -371,10 +371,28 @@ module top_serpent_says #(
     wire [11:0] obstacle_sprite_data;
     sprite_rom #(.SPRITE_FILE("Obstacle.mem"), .DEPTH(256)) u_obs_sprite (.clk(clk_25mhz), .addr(obstacle_sprite_addr), .data(obstacle_sprite_data));
 
-    // Life icon sprite
-    wire [7:0]  life_sprite_addr;
-    wire [11:0] life_sprite_data;
-    sprite_rom #(.SPRITE_FILE("live.mem"), .DEPTH(256)) u_life_sprite (.clk(clk_25mhz), .addr(life_sprite_addr), .data(life_sprite_data));
+    // Heart sprites (13x13): blue = player lives, red = rival lives
+    wire [7:0]  heart_blue_addr, heart_red_addr;
+    wire [11:0] heart_blue_data, heart_red_data;
+    sprite_rom #(.SPRITE_FILE("Heart_Blue.mem"), .DEPTH(169), .WIDTH(13))
+        u_heart_blue (.clk(clk_25mhz), .addr(heart_blue_addr), .data(heart_blue_data));
+    sprite_rom #(.SPRITE_FILE("Heart_Red.mem"),  .DEPTH(169), .WIDTH(13))
+        u_heart_red  (.clk(clk_25mhz), .addr(heart_red_addr),  .data(heart_red_data));
+
+    // Grass tile sprites (16x16, decorative). All three are read in parallel and
+    // muxed by temp_state so the playfield decoration tracks temperature alongside
+    // the existing background tint.
+    wire [7:0]  grass_sprite_addr;
+    wire [11:0] grass_cold_data, grass_neutral_data, grass_hot_data;
+    sprite_rom #(.SPRITE_FILE("Grass_Cold.mem"),   .DEPTH(256))
+        u_grass_cold   (.clk(clk_25mhz), .addr(grass_sprite_addr), .data(grass_cold_data));
+    sprite_rom #(.SPRITE_FILE("Grass_Normal.mem"), .DEPTH(256))
+        u_grass_normal (.clk(clk_25mhz), .addr(grass_sprite_addr), .data(grass_neutral_data));
+    sprite_rom #(.SPRITE_FILE("Grass_Hot.mem"),    .DEPTH(256))
+        u_grass_hot    (.clk(clk_25mhz), .addr(grass_sprite_addr), .data(grass_hot_data));
+    wire [11:0] grass_sprite_data = (temp_state == 2'b00) ? grass_cold_data    :
+                                    (temp_state == 2'b10) ? grass_hot_data     :
+                                                            grass_neutral_data;
 
     // Victory banner (312x40 = 12480, block ROM)
     wire [13:0] victory_sprite_addr;
@@ -388,21 +406,29 @@ module top_serpent_says #(
     sprite_rom #(.SPRITE_FILE("gameOver.mem"), .DEPTH(14720), .WIDTH(368), .USE_BLOCK_ROM(1))
         u_gameover_sprite (.clk(clk_25mhz), .addr(gameover_sprite_addr), .data(gameover_sprite_data));
 
-    // Logo sprite (400x52 = 20800, block ROM)
-    wire [14:0] logo_sprite_addr;
-    wire [11:0] logo_sprite_data;
-    sprite_rom #(.SPRITE_FILE("Logo.mem"), .DEPTH(20800), .WIDTH(400), .USE_BLOCK_ROM(1))
-        u_logo_sprite (.clk(clk_25mhz), .addr(logo_sprite_addr), .data(logo_sprite_data));
+    // TitleText sprite (500x73 = 36500, block ROM). Drawn at the top of the
+    // safe area on TITLE_SCREEN, above the larger title splash.
+    wire [15:0] titletext_sprite_addr;
+    wire [11:0] titletext_sprite_data;
+    sprite_rom #(.SPRITE_FILE("TitleText.mem"), .DEPTH(36500), .WIDTH(500), .USE_BLOCK_ROM(1))
+        u_titletext_sprite (.clk(clk_25mhz), .addr(titletext_sprite_addr), .data(titletext_sprite_data));
 
-    // Title sprite (400x225 = 90000, block ROM)
+    // Title splash (480x270 = 129600, block ROM). Sits below TitleText.
     wire [16:0] title_sprite_addr;
     wire [11:0] title_sprite_data;
-    sprite_rom #(.SPRITE_FILE("Title.mem"), .DEPTH(90000), .WIDTH(400), .USE_BLOCK_ROM(1))
+    sprite_rom #(.SPRITE_FILE("TitleScreenNew.mem"), .DEPTH(129600), .WIDTH(480), .USE_BLOCK_ROM(1))
         u_title_sprite (.clk(clk_25mhz), .addr(title_sprite_addr), .data(title_sprite_data));
 
     // --- Info bar renderer ---
     wire        info_active;
     wire [11:0] info_rgb;
+    wire [3:0]  vga_r_comb, vga_g_comb, vga_b_comb;
+
+    (* IOB = "TRUE" *) reg [3:0] vga_r_reg;
+    (* IOB = "TRUE" *) reg [3:0] vga_g_reg;
+    (* IOB = "TRUE" *) reg [3:0] vga_b_reg;
+    (* IOB = "TRUE" *) reg       vga_hs_reg;
+    (* IOB = "TRUE" *) reg       vga_vs_reg;
 
     info_bar_renderer u_info_bar (
         .clk(clk_25mhz), .reset_n(CPU_RESETN),
@@ -414,8 +440,10 @@ module top_serpent_says #(
         .last_player_cmd(last_player_cmd),
         .last_turn_source(last_turn_source),
         .voice_mode_en(voice_mode_en),
-        .life_sprite_addr(life_sprite_addr),
-        .life_sprite_data(life_sprite_data),
+        .heart_blue_addr(heart_blue_addr),
+        .heart_blue_data(heart_blue_data),
+        .heart_red_addr(heart_red_addr),
+        .heart_red_data(heart_red_data),
         .info_active(info_active),
         .info_rgb(info_rgb)
     );
@@ -460,16 +488,37 @@ module top_serpent_says #(
         .victory_sprite_addr(victory_sprite_addr),
         .gameover_sprite_data(gameover_sprite_data),
         .gameover_sprite_addr(gameover_sprite_addr),
-        .logo_sprite_data(logo_sprite_data),
-        .logo_sprite_addr(logo_sprite_addr),
+        .titletext_sprite_data(titletext_sprite_data),
+        .titletext_sprite_addr(titletext_sprite_addr),
         .title_sprite_data(title_sprite_data),
         .title_sprite_addr(title_sprite_addr),
+        .grass_sprite_data(grass_sprite_data),
+        .grass_sprite_addr(grass_sprite_addr),
         .temp_state(temp_state),
-        .vga_r(VGA_R), .vga_g(VGA_G), .vga_b(VGA_B)
+        .vga_r(vga_r_comb), .vga_g(vga_g_comb), .vga_b(vga_b_comb)
     );
 
-    assign VGA_HS = hsync_int;
-    assign VGA_VS = vsync_int;
+    always @(posedge clk_25mhz or negedge CPU_RESETN) begin
+        if (!CPU_RESETN) begin
+            vga_r_reg  <= 4'h0;
+            vga_g_reg  <= 4'h0;
+            vga_b_reg  <= 4'h0;
+            vga_hs_reg <= 1'b1;
+            vga_vs_reg <= 1'b1;
+        end else begin
+            vga_r_reg  <= vga_r_comb;
+            vga_g_reg  <= vga_g_comb;
+            vga_b_reg  <= vga_b_comb;
+            vga_hs_reg <= hsync_int;
+            vga_vs_reg <= vsync_int;
+        end
+    end
+
+    assign VGA_R  = vga_r_reg;
+    assign VGA_G  = vga_g_reg;
+    assign VGA_B  = vga_b_reg;
+    assign VGA_HS = vga_hs_reg;
+    assign VGA_VS = vga_vs_reg;
 
     // --- Seven-segment driver ---
     wire [6:0] seg_out;
